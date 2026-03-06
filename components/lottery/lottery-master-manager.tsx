@@ -39,17 +39,41 @@ const sortEntries = (entries: LotteryMasterEntry[]) =>
 
 export const LotteryMasterManager = ({ storeId, initialEntries }: LotteryMasterManagerProps) => {
   const [entries, setEntries] = useState<LotteryMasterEntry[]>(sortEntries(initialEntries));
+  const getNextDisplayNumber = (sourceEntries: LotteryMasterEntry[]) =>
+    Math.max(1, (sortEntries(sourceEntries).at(-1)?.display_number ?? 0) + 1);
   const [form, setForm] = useState<FormState>(() => {
-    const nextDisplay = (sortEntries(initialEntries).at(-1)?.display_number ?? 0) + 1;
-    return { ...emptyForm, display_number: Math.max(1, nextDisplay) };
+    return { ...emptyForm, display_number: getNextDisplayNumber(initialEntries) };
   });
+  const [isFormOpen, setIsFormOpen] = useState(initialEntries.length === 0);
   const [pending, startTransition] = useTransition();
 
   const previewRows = useMemo(() => sortEntries(entries), [entries]);
+  const activePreviewRows = useMemo(
+    () => previewRows.filter((entry) => entry.is_active),
+    [previewRows]
+  );
 
-  const resetForm = () => {
-    const nextDisplay = (sortEntries(entries).at(-1)?.display_number ?? 0) + 1;
-    setForm({ ...emptyForm, display_number: Math.max(1, nextDisplay) });
+  const resetForm = (open = false) => {
+    setForm({ ...emptyForm, display_number: getNextDisplayNumber(entries) });
+    setIsFormOpen(open);
+  };
+
+  const openCreateForm = () => {
+    resetForm(true);
+  };
+
+  const startEdit = (entry: LotteryMasterEntry) => {
+    setForm({
+      id: entry.id,
+      display_number: entry.display_number,
+      name: entry.name,
+      ticket_price: entry.ticket_price,
+      default_bundle_size: entry.default_bundle_size,
+      is_active: entry.is_active,
+      is_locked: entry.is_locked,
+      notes: entry.notes ?? ""
+    });
+    setIsFormOpen(true);
   };
 
   const persistOfflineAndQueue = async (payload: LotteryMasterEntry) => {
@@ -69,7 +93,7 @@ export const LotteryMasterManager = ({ storeId, initialEntries }: LotteryMasterM
       return;
     }
     if (form.ticket_price < 0) {
-      toast.error("Ticket price must be 0 or more.");
+      toast.error("Amount must be 0 or more.");
       return;
     }
     if (form.default_bundle_size <= 0) {
@@ -83,11 +107,12 @@ export const LotteryMasterManager = ({ storeId, initialEntries }: LotteryMasterM
         (form.id ? entry.id !== form.id : true)
     );
     if (conflict) {
-      toast.error("Display number already exists for this store.");
+      toast.error("Lottery number already exists for this store.");
       return;
     }
 
     startTransition(async () => {
+      const isEditing = Boolean(form.id);
       const id = form.id ?? crypto.randomUUID();
       const payload: LotteryMasterEntry = {
         id,
@@ -154,8 +179,8 @@ export const LotteryMasterManager = ({ storeId, initialEntries }: LotteryMasterM
           ])
         );
         await offlineDb.lotteryMasterEntries.put({ ...saved, store_id: storeId, _dirty: false });
-        toast.success(form.id ? "Lottery entry updated." : "Lottery entry created.");
-        resetForm();
+        toast.success(isEditing ? "Lottery entry updated." : "Lottery entry created.");
+        resetForm(!isEditing);
       } catch (error) {
         await persistOfflineAndQueue(payload);
         setEntries((current) =>
@@ -166,7 +191,7 @@ export const LotteryMasterManager = ({ storeId, initialEntries }: LotteryMasterM
             ? `${error.message} Saved locally and queued for sync.`
             : "Saved locally and queued for sync."
         );
-        resetForm();
+        resetForm(!isEditing);
       }
     });
   };
@@ -245,208 +270,249 @@ export const LotteryMasterManager = ({ storeId, initialEntries }: LotteryMasterM
   return (
     <div className="space-y-4">
       <section className="surface p-4">
-        <h3 className="text-sm font-semibold uppercase tracking-wide text-white/70">
-          Lottery Master Setup
-        </h3>
-        <p className="mt-1 text-xs text-white/65">
-          Locked entries are read-only in daily closing identity/price fields. Staff only enters
-          start/end numbers plus summary-level Online/Paid Out values.
-        </p>
-        <div className="mt-4 grid gap-2 sm:grid-cols-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <label className="field-label">Display Number</label>
-            <input
-              className="field"
-              type="number"
-              min={1}
-              value={form.display_number}
-              onChange={(event) =>
-                setForm((current) => ({
-                  ...current,
-                  display_number: Number(event.target.value || 1)
-                }))
-              }
-            />
+            <h3 className="text-sm font-semibold uppercase tracking-wide text-white/70">
+              Lottery Setup
+            </h3>
+            <p className="mt-1 text-xs text-white/65">
+              Add and manage scratch ticket lotteries for this store. Active entries appear
+              automatically in nightly closing.
+            </p>
           </div>
-          <div>
-            <label className="field-label">Lottery Name</label>
-            <input
-              className="field"
-              value={form.name}
-              onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
-            />
-          </div>
-          <div>
-            <label className="field-label">Ticket Price</label>
-            <input
-              className="field"
-              type="number"
-              step="0.01"
-              min={0}
-              value={form.ticket_price}
-              onChange={(event) =>
-                setForm((current) => ({
-                  ...current,
-                  ticket_price: Number(event.target.value || 0)
-                }))
-              }
-            />
-          </div>
-          <div>
-            <label className="field-label">Default Bundle Size</label>
-            <input
-              className="field"
-              type="number"
-              min={1}
-              value={form.default_bundle_size}
-              onChange={(event) =>
-                setForm((current) => ({
-                  ...current,
-                  default_bundle_size: Number(event.target.value || 100)
-                }))
-              }
-            />
-          </div>
-          <label className="mt-5 inline-flex items-center gap-2 text-xs text-white/80">
-            <input
-              type="checkbox"
-              checked={form.is_active}
-              onChange={(event) =>
-                setForm((current) => ({ ...current, is_active: event.target.checked }))
-              }
-            />
-            Active
-          </label>
-          <label className="mt-5 inline-flex items-center gap-2 text-xs text-white/80">
-            <input
-              type="checkbox"
-              checked={form.is_locked}
-              onChange={(event) =>
-                setForm((current) => ({ ...current, is_locked: event.target.checked }))
-              }
-            />
-            Locked
-          </label>
-        </div>
-        <div className="mt-2">
-          <label className="field-label">Notes</label>
-          <textarea
-            className="field"
-            rows={3}
-            value={form.notes}
-            onChange={(event) => setForm((current) => ({ ...current, notes: event.target.value }))}
-          />
-        </div>
-        <div className="mt-3 flex gap-2">
-          <DepthButton type="button" disabled={pending} onClick={submit}>
-            {form.id ? "Update Lottery" : "Add Lottery"}
+          <DepthButton type="button" disabled={pending} onClick={openCreateForm}>
+            Add Lottery
           </DepthButton>
-          {form.id && (
-            <button
-              type="button"
-              className="rounded-lg border border-white/20 px-3 py-2 text-xs hover:bg-white/10"
-              onClick={resetForm}
-            >
-              Cancel Edit
-            </button>
-          )}
         </div>
       </section>
 
-      <section className="surface overflow-hidden">
-        <table className="min-w-full text-sm">
-          <thead className="bg-white/5 text-left text-xs uppercase tracking-wide text-white/70">
-            <tr>
-              <th className="px-3 py-2">#</th>
-              <th className="px-3 py-2">Name</th>
-              <th className="px-3 py-2">Price</th>
-              <th className="px-3 py-2">Bundle</th>
-              <th className="px-3 py-2">Status</th>
-              <th className="px-3 py-2">Lock</th>
-              <th className="px-3 py-2">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {previewRows.map((entry) => (
-              <tr key={entry.id} className="border-t border-white/10">
-                <td className="px-3 py-2 font-semibold">{entry.display_number}</td>
-                <td className="px-3 py-2">{entry.name}</td>
-                <td className="px-3 py-2">{formatCurrency(entry.ticket_price)}</td>
-                <td className="px-3 py-2">{entry.default_bundle_size}</td>
-                <td className="px-3 py-2">
-                  <span
-                    className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
-                      entry.is_active
-                        ? "border border-emerald-300/40 bg-emerald-500/20 text-emerald-100"
-                        : "border border-white/25 bg-white/10 text-white/70"
-                    }`}
-                  >
-                    {entry.is_active ? "Active" : "Inactive"}
-                  </span>
-                </td>
-                <td className="px-3 py-2">{entry.is_locked ? "Locked" : "Unlocked"}</td>
-                <td className="px-3 py-2">
-                  <div className="flex flex-wrap gap-1">
-                    <button
-                      type="button"
-                      className="rounded border border-white/20 px-2 py-1 text-[11px] hover:bg-white/10"
-                      onClick={() =>
-                        setForm({
-                          id: entry.id,
-                          display_number: entry.display_number,
-                          name: entry.name,
-                          ticket_price: entry.ticket_price,
-                          default_bundle_size: entry.default_bundle_size,
-                          is_active: entry.is_active,
-                          is_locked: entry.is_locked,
-                          notes: entry.notes ?? ""
-                        })
-                      }
-                    >
-                      Edit
-                    </button>
-                    <button
-                      type="button"
-                      className="rounded border border-white/20 px-2 py-1 text-[11px] hover:bg-white/10"
-                      onClick={() =>
-                        void quickUpdate(entry, {
-                          is_locked: !entry.is_locked
-                        })
-                      }
-                    >
-                      {entry.is_locked ? "Unlock" : "Lock"}
-                    </button>
-                    <button
-                      type="button"
-                      className="rounded border border-white/20 px-2 py-1 text-[11px] hover:bg-white/10"
-                      onClick={() =>
-                        void quickUpdate(entry, {
-                          is_active: !entry.is_active
-                        })
-                      }
-                    >
-                      {entry.is_active ? "Deactivate" : "Activate"}
-                    </button>
-                    <button
-                      type="button"
-                      className="rounded border border-red-300/40 px-2 py-1 text-[11px] text-red-100 hover:bg-red-500/20"
-                      onClick={() => deleteEntry(entry)}
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-            {previewRows.length === 0 && (
-              <tr>
-                <td colSpan={7} className="px-3 py-6 text-center text-sm text-white/60">
-                  No lottery entries configured.
-                </td>
-              </tr>
+      {isFormOpen && (
+        <section className="surface p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-sm font-semibold uppercase tracking-wide text-white/70">
+              {form.id ? "Edit Lottery" : "Add Lottery"}
+            </h3>
+            <button
+              type="button"
+              className="rounded-lg border border-white/20 px-3 py-2 text-xs font-semibold hover:bg-white/10"
+              onClick={() => resetForm(false)}
+            >
+              Close
+            </button>
+          </div>
+          <p className="mt-1 text-xs text-white/65">
+            Locked entries keep lottery identity and amount read-only during closing.
+          </p>
+          <div className="mt-4 grid gap-2 sm:grid-cols-3">
+            <div>
+              <label className="field-label">Lottery Number</label>
+              <input
+                className="field"
+                type="number"
+                min={1}
+                value={form.display_number}
+                onChange={(event) =>
+                  setForm((current) => ({
+                    ...current,
+                    display_number: Number(event.target.value || 1)
+                  }))
+                }
+              />
+            </div>
+            <div>
+              <label className="field-label">Lottery Name</label>
+              <input
+                className="field"
+                value={form.name}
+                onChange={(event) =>
+                  setForm((current) => ({ ...current, name: event.target.value }))
+                }
+              />
+            </div>
+            <div>
+              <label className="field-label">Amount</label>
+              <input
+                className="field"
+                type="number"
+                step="0.01"
+                min={0}
+                value={form.ticket_price}
+                onChange={(event) =>
+                  setForm((current) => ({
+                    ...current,
+                    ticket_price: Number(event.target.value || 0)
+                  }))
+                }
+              />
+            </div>
+            <div>
+              <label className="field-label">Default Bundle Size</label>
+              <input
+                className="field"
+                type="number"
+                min={1}
+                value={form.default_bundle_size}
+                onChange={(event) =>
+                  setForm((current) => ({
+                    ...current,
+                    default_bundle_size: Number(event.target.value || 100)
+                  }))
+                }
+              />
+            </div>
+            <label className="mt-5 inline-flex items-center gap-2 text-xs text-white/80">
+              <input
+                type="checkbox"
+                checked={form.is_active}
+                onChange={(event) =>
+                  setForm((current) => ({ ...current, is_active: event.target.checked }))
+                }
+              />
+              Active
+            </label>
+            <label className="mt-5 inline-flex items-center gap-2 text-xs text-white/80">
+              <input
+                type="checkbox"
+                checked={form.is_locked}
+                onChange={(event) =>
+                  setForm((current) => ({ ...current, is_locked: event.target.checked }))
+                }
+              />
+              Locked
+            </label>
+          </div>
+          <div className="mt-2">
+            <label className="field-label">Notes</label>
+            <textarea
+              className="field"
+              rows={3}
+              value={form.notes}
+              onChange={(event) =>
+                setForm((current) => ({ ...current, notes: event.target.value }))
+              }
+            />
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <DepthButton type="button" disabled={pending} onClick={submit}>
+              {pending ? "Saving..." : form.id ? "Save Changes" : "Add Lottery"}
+            </DepthButton>
+            {form.id && (
+              <button
+                type="button"
+                className="rounded-lg border border-white/20 px-3 py-2 text-xs hover:bg-white/10"
+                onClick={openCreateForm}
+              >
+                Cancel Edit
+              </button>
             )}
-          </tbody>
-        </table>
+          </div>
+        </section>
+      )}
+
+      <section className="surface overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead className="bg-white/5 text-left text-xs uppercase tracking-wide text-white/70">
+              <tr>
+                <th className="px-3 py-2">Number</th>
+                <th className="px-3 py-2">Lottery Name</th>
+                <th className="px-3 py-2">Amount</th>
+                <th className="px-3 py-2">Bundle Size</th>
+                <th className="px-3 py-2">Status</th>
+                <th className="px-3 py-2">Lock Status</th>
+                <th className="px-3 py-2">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {previewRows.map((entry) => (
+                <tr key={entry.id} className="border-t border-white/10">
+                  <td className="px-3 py-2 font-semibold">{entry.display_number}</td>
+                  <td className="px-3 py-2">{entry.name}</td>
+                  <td className="px-3 py-2">{formatCurrency(entry.ticket_price)}</td>
+                  <td className="px-3 py-2">{entry.default_bundle_size}</td>
+                  <td className="px-3 py-2">
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                        entry.is_active
+                          ? "border border-emerald-300/40 bg-emerald-500/20 text-emerald-100"
+                          : "border border-white/25 bg-white/10 text-white/70"
+                      }`}
+                    >
+                      {entry.is_active ? "Active" : "Inactive"}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2">
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                        entry.is_locked
+                          ? "border border-amber-300/40 bg-amber-500/20 text-amber-100"
+                          : "border border-white/25 bg-white/10 text-white/70"
+                      }`}
+                    >
+                      {entry.is_locked ? "Locked" : "Unlocked"}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2">
+                    <div className="flex flex-wrap gap-1">
+                      <button
+                        type="button"
+                        className="rounded border border-white/20 px-2 py-1 text-[11px] hover:bg-white/10"
+                        onClick={() => startEdit(entry)}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded border border-white/20 px-2 py-1 text-[11px] hover:bg-white/10"
+                        onClick={() =>
+                          void quickUpdate(entry, {
+                            is_active: !entry.is_active
+                          })
+                        }
+                      >
+                        {entry.is_active ? "Deactivate" : "Activate"}
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded border border-white/20 px-2 py-1 text-[11px] hover:bg-white/10"
+                        onClick={() =>
+                          void quickUpdate(entry, {
+                            is_locked: !entry.is_locked
+                          })
+                        }
+                      >
+                        {entry.is_locked ? "Unlock" : "Lock"}
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded border border-red-300/40 px-2 py-1 text-[11px] text-red-100 hover:bg-red-500/20"
+                        onClick={() => deleteEntry(entry)}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {previewRows.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="px-3 py-8">
+                    <div className="flex flex-col items-center justify-center gap-3 text-center">
+                      <p className="text-sm font-medium text-white/80">No lotteries configured yet.</p>
+                      <button
+                        type="button"
+                        className="rounded-lg border border-brand-crimson/40 bg-brand-crimson/15 px-3 py-2 text-xs font-semibold text-white hover:bg-brand-crimson/25"
+                        onClick={openCreateForm}
+                      >
+                        Add First Lottery
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </section>
 
       <section className="surface p-4">
@@ -454,18 +520,21 @@ export const LotteryMasterManager = ({ storeId, initialEntries }: LotteryMasterM
           Closing Preview
         </h3>
         <div className="mt-2 space-y-2">
-          {previewRows
-            .filter((entry) => entry.is_active)
-            .map((entry) => (
-              <div
-                key={entry.id}
-                className="rounded-lg border border-white/10 bg-black/25 px-3 py-2 text-xs text-white/80"
-              >
-                <span className="mr-2 font-semibold">{entry.display_number}.</span>
-                {entry.name} · {formatCurrency(entry.ticket_price)}
-                {entry.is_locked ? " · locked in closing" : " · editable by admin setup"}
-              </div>
-            ))}
+          {activePreviewRows.length === 0 && (
+            <p className="rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-xs text-white/70">
+              No active lotteries configured yet.
+            </p>
+          )}
+          {activePreviewRows.map((entry) => (
+            <div
+              key={entry.id}
+              className="rounded-lg border border-white/10 bg-black/25 px-3 py-2 text-xs text-white/80"
+            >
+              <span className="mr-2 font-semibold">{entry.display_number}.</span>
+              {entry.name} · {formatCurrency(entry.ticket_price)}
+              {entry.is_locked ? " · locked in closing" : " · editable by admin setup"}
+            </div>
+          ))}
         </div>
       </section>
     </div>

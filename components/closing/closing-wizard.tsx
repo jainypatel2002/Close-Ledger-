@@ -2,6 +2,7 @@
 
 import { zodResolver } from "@hookform/resolvers/zod";
 import { motion } from "framer-motion";
+import Link from "next/link";
 import { useDeferredValue, useEffect, useMemo, useState, useTransition } from "react";
 import { useFieldArray, useForm, useWatch } from "react-hook-form";
 import { toast } from "sonner";
@@ -53,6 +54,7 @@ export const ClosingWizard = ({
 }: ClosingWizardProps) => {
   const [stepIndex, setStepIndex] = useState(0);
   const [pending, startTransition] = useTransition();
+  const [refreshingLotterySetup, setRefreshingLotterySetup] = useState(false);
   const [lastSavedStatus, setLastSavedStatus] = useState<ClosingFormValues["status"]>(
     initialValue?.status ?? "DRAFT"
   );
@@ -199,6 +201,80 @@ export const ClosingWizard = ({
       active = false;
     };
   }, [form, initialValue, lotteryLineCount, store.id]);
+
+  const replaceLotteryLinesFromEntries = (entries: LotteryMasterEntry[]) => {
+    const snapshotLines = buildLotteryLinesFromMasterEntries(
+      entries.filter((entry) => entry.is_active)
+    );
+    if (snapshotLines.length === 0) {
+      return false;
+    }
+    form.setValue("lottery_lines", snapshotLines, {
+      shouldDirty: true,
+      shouldTouch: false,
+      shouldValidate: false
+    });
+    return true;
+  };
+
+  const refreshLotterySetup = async () => {
+    if (refreshingLotterySetup) {
+      return;
+    }
+    setRefreshingLotterySetup(true);
+
+    try {
+      const response = await fetch(
+        `/api/lottery-master?storeId=${encodeURIComponent(store.id)}&activeOnly=1`,
+        {
+          cache: "no-store"
+        }
+      );
+      const result = (await response.json().catch(() => ({}))) as {
+        data?: LotteryMasterEntry[];
+        error?: string;
+      };
+      if (!response.ok) {
+        throw new Error(result.error || "Unable to refresh lottery setup.");
+      }
+
+      const activeEntries = Array.isArray(result.data) ? result.data : [];
+      if (activeEntries.length === 0) {
+        toast.info("No active lotteries are configured for this store yet.");
+        return;
+      }
+
+      if (!replaceLotteryLinesFromEntries(activeEntries)) {
+        toast.info("No active lotteries are configured for this store yet.");
+        return;
+      }
+
+      await Promise.all(
+        activeEntries.map((entry) =>
+          offlineDb.lotteryMasterEntries.put({
+            ...entry,
+            _dirty: false
+          })
+        )
+      );
+      toast.success("Lottery setup refreshed.");
+    } catch (error) {
+      const cachedEntries = await offlineDb.lotteryMasterEntries
+        .where("store_id")
+        .equals(store.id)
+        .filter((entry) => entry.is_active)
+        .toArray();
+      if (cachedEntries.length > 0 && replaceLotteryLinesFromEntries(cachedEntries)) {
+        toast.info("Loaded cached lottery setup.");
+      } else {
+        toast.error(
+          error instanceof Error ? error.message : "Unable to refresh lottery setup."
+        );
+      }
+    } finally {
+      setRefreshingLotterySetup(false);
+    }
+  };
 
   const persist = (status: ClosingFormValues["status"]) =>
     form.handleSubmit((values) => {
@@ -425,11 +501,21 @@ export const ClosingWizard = ({
 
         {stepIndex === 2 && (
           <section className="space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <h3 className="text-lg font-semibold">Lottery Scratch Tickets</h3>
-              <p className="text-xs text-white/65">
-                Start is the higher ticket number. End is the lower number.
-              </p>
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div>
+                <h3 className="text-lg font-semibold">Lottery Scratch Tickets</h3>
+                <p className="text-xs text-white/65">
+                  Start is the higher ticket number. End is the lower number.
+                </p>
+              </div>
+              {role === "ADMIN" && (
+                <Link
+                  href="/settings/lottery"
+                  className="rounded-lg border border-white/20 px-3 py-2 text-xs font-semibold hover:bg-white/10"
+                >
+                  Manage Lottery Setup
+                </Link>
+              )}
             </div>
 
             <input
@@ -609,10 +695,38 @@ export const ClosingWizard = ({
             )}
 
             {lotteryArray.fields.length === 0 && (
-              <p className="rounded-lg border border-amber-300/35 bg-amber-500/10 p-3 text-xs text-amber-100">
-                No active lottery setup found for this store. Ask an admin to configure Lottery
-                Master entries in Settings.
-              </p>
+              role === "ADMIN" ? (
+                <div className="rounded-xl border border-brand-crimson/30 bg-brand-crimson/10 p-4">
+                  <p className="text-sm font-semibold text-white">
+                    No active lotteries are configured for this store yet.
+                  </p>
+                  <p className="mt-1 text-xs text-white/75">
+                    Add scratch ticket lotteries in Lottery Setup so they appear here
+                    automatically.
+                  </p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Link
+                      href="/settings/lottery"
+                      className="inline-flex items-center rounded-lg border border-brand-crimson/40 bg-brand-crimson/20 px-3 py-2 text-xs font-semibold text-white hover:bg-brand-crimson/30"
+                    >
+                      Open Lottery Setup
+                    </Link>
+                    <button
+                      type="button"
+                      className="rounded-lg border border-white/20 px-3 py-2 text-xs font-semibold hover:bg-white/10 disabled:opacity-60"
+                      disabled={refreshingLotterySetup}
+                      onClick={() => void refreshLotterySetup()}
+                    >
+                      {refreshingLotterySetup ? "Refreshing..." : "Refresh Lotteries"}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <p className="rounded-lg border border-amber-300/35 bg-amber-500/10 p-3 text-xs text-amber-100">
+                  No active lottery setup found for this store. Ask an admin to configure Lottery
+                  Setup.
+                </p>
+              )
             )}
 
             <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">

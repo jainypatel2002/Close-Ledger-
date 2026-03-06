@@ -84,10 +84,10 @@ export const requireSessionContext = async (): Promise<SessionContext> => {
   return context;
 };
 
-export const requireAdmin = async (): Promise<SessionContext> => {
+export const requireAdmin = async (reason = "admin"): Promise<SessionContext> => {
   const context = await requireSessionContext();
   if (context.membership?.role !== "ADMIN") {
-    redirect("/forbidden?reason=admin");
+    redirect(`/forbidden?reason=${encodeURIComponent(reason)}`);
   }
   return context;
 };

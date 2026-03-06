@@ -15,6 +15,8 @@ export default async function ForbiddenPage({
         <p className="text-sm text-white/70">
           {params.reason === "admin"
             ? "This section requires an ADMIN role."
+            : params.reason === "lottery_setup"
+              ? "Lottery Setup is available only to ADMIN users for the active store."
             : params.reason === "history"
               ? "History is disabled for your role in this store."
               : params.reason === "reports"
