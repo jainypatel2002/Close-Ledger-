@@ -14,13 +14,13 @@ export interface LotteryClosingLineSnapshot {
   bundle_size_snapshot: number;
   is_locked_snapshot: boolean;
   pack_id?: string;
-  start_number: number;
-  end_number: number;
+  start_number?: number;
+  end_number?: number;
   inclusive_count: boolean;
   tickets_sold_override?: number | null;
   manual_override_reason?: string;
   override_reason?: string | null;
-  payouts: number;
+  payouts?: number;
 }
 
 export const buildLotteryLineFromMasterEntry = (
@@ -34,8 +34,8 @@ export const buildLotteryLineFromMasterEntry = (
   bundle_size_snapshot: Number(entry.default_bundle_size ?? 100),
   is_locked_snapshot: Boolean(entry.is_locked),
   pack_id: "",
-  start_number: 0,
-  end_number: 0,
+  start_number: undefined,
+  end_number: undefined,
   inclusive_count: false,
   tickets_sold_override: null,
   manual_override_reason: "",

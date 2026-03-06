@@ -45,6 +45,7 @@ export default async function NewClosingPage() {
         initialValue={initialValue}
         lotteryMasterEntries={lotteryMasterEntries}
         allowPrintPdf={canPrintPdf(context.membership, store)}
+        autoPrepareNextEntry
       />
     </div>
   );

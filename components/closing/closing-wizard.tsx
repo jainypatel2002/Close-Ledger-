@@ -2,7 +2,6 @@
 
 import { zodResolver } from "@hookform/resolvers/zod";
 import { motion } from "framer-motion";
-import Link from "next/link";
 import { useDeferredValue, useEffect, useMemo, useState, useTransition } from "react";
 import { useFieldArray, useForm, useWatch } from "react-hook-form";
 import { toast } from "sonner";
@@ -18,6 +17,13 @@ import { downloadPdfBytes, generateOfflineClosingPdf } from "@/lib/pdf/client-fa
 import { enqueueMutation } from "@/lib/offline/sync";
 import { buildLotteryLinesFromMasterEntries, computeSnapshotLineTotals } from "@/lib/lottery/snapshots";
 import { validateLotteryRange } from "@/lib/math/lottery";
+import {
+  appendLotteryMasterEntryToDraftLines,
+  buildNextClosingDraftForLotteryWorkflow,
+  getNextLotteryDisplayNumber,
+  sortLotteryMasterEntries,
+  upsertLotteryMasterEntry
+} from "@/lib/lottery/closing-draft";
 
 interface ClosingWizardProps {
   store: Store;
@@ -25,6 +31,7 @@ interface ClosingWizardProps {
   initialValue?: ClosingFormValues;
   lotteryMasterEntries?: LotteryMasterEntry[];
   allowPrintPdf: boolean;
+  autoPrepareNextEntry?: boolean;
 }
 
 const steps = [
@@ -45,18 +52,49 @@ const bytesToBase64 = (bytes: Uint8Array) => {
   return btoa(binary);
 };
 
+interface LotteryConfigFormState {
+  id?: string;
+  display_number: number;
+  name: string;
+  ticket_price: number;
+  default_bundle_size: number;
+  is_active: boolean;
+  is_locked: boolean;
+  notes: string;
+}
+
+const createLotteryConfigFormState = (
+  entries: LotteryMasterEntry[],
+  scratchBundleSizeDefault: number
+): LotteryConfigFormState => ({
+  display_number: getNextLotteryDisplayNumber(entries),
+  name: "",
+  ticket_price: 0,
+  default_bundle_size: scratchBundleSizeDefault,
+  is_active: true,
+  is_locked: true,
+  notes: ""
+});
+
 export const ClosingWizard = ({
   store,
   role,
   initialValue,
   lotteryMasterEntries = [],
-  allowPrintPdf
+  allowPrintPdf,
+  autoPrepareNextEntry = false
 }: ClosingWizardProps) => {
   const [stepIndex, setStepIndex] = useState(0);
   const [pending, startTransition] = useTransition();
-  const [refreshingLotterySetup, setRefreshingLotterySetup] = useState(false);
   const [lastSavedStatus, setLastSavedStatus] = useState<ClosingFormValues["status"]>(
     initialValue?.status ?? "DRAFT"
+  );
+  const [lotteryCatalog, setLotteryCatalog] = useState<LotteryMasterEntry[]>(
+    sortLotteryMasterEntries(lotteryMasterEntries)
+  );
+  const [isLotteryConfigFormOpen, setIsLotteryConfigFormOpen] = useState(false);
+  const [lotteryConfigForm, setLotteryConfigForm] = useState<LotteryConfigFormState>(() =>
+    createLotteryConfigFormState(lotteryMasterEntries, store.scratch_bundle_size_default)
   );
   const form = useForm<ClosingFormValues>({
     resolver: zodResolver(closingFormSchema),
@@ -73,6 +111,7 @@ export const ClosingWizard = ({
   const lotteryLineCount = watched.lottery_lines?.length ?? 0;
   const lockForStaff = role === "STAFF" && lastSavedStatus !== "DRAFT";
   const readOnly = role === "STAFF" && (lockForStaff || watched.status === "LOCKED");
+  const canManageLotteryConfig = role === "ADMIN";
   const lotteryRowIndexes = useMemo(
     () =>
       lotteryArray.fields
@@ -83,6 +122,10 @@ export const ClosingWizard = ({
             Number(watched.lottery_lines?.[b]?.display_number_snapshot ?? b + 1)
         ),
     [lotteryArray.fields, watched.lottery_lines]
+  );
+  const sortedLotteryCatalog = useMemo(
+    () => sortLotteryMasterEntries(lotteryCatalog),
+    [lotteryCatalog]
   );
 
   const totals = useMemo(() => {
@@ -174,42 +217,92 @@ export const ClosingWizard = ({
   }, [form, readOnly]);
 
   useEffect(() => {
-    if (initialValue || lotteryLineCount > 0) {
-      return;
-    }
+    const sorted = sortLotteryMasterEntries(lotteryMasterEntries);
+    setLotteryCatalog(sorted);
+    setLotteryConfigForm(
+      createLotteryConfigFormState(sorted, store.scratch_bundle_size_default)
+    );
+    setIsLotteryConfigFormOpen(false);
+  }, [lotteryMasterEntries, store.id, store.scratch_bundle_size_default]);
+
+  useEffect(() => {
     let active = true;
     void (async () => {
       const cachedEntries = await offlineDb.lotteryMasterEntries
         .where("store_id")
         .equals(store.id)
-        .filter((entry) => entry.is_active)
         .toArray();
       if (!active || cachedEntries.length === 0) {
         return;
       }
-      const snapshotLines = buildLotteryLinesFromMasterEntries(cachedEntries);
-      if (snapshotLines.length === 0) {
-        return;
-      }
-      form.setValue("lottery_lines", snapshotLines, {
-        shouldDirty: false,
-        shouldTouch: false,
-        shouldValidate: false
+      setLotteryCatalog((current) => {
+        let merged = current;
+        cachedEntries.forEach((entry) => {
+          merged = upsertLotteryMasterEntry(merged, entry);
+        });
+        return merged;
       });
     })();
+
     return () => {
       active = false;
     };
-  }, [form, initialValue, lotteryLineCount, store.id]);
+  }, [store.id]);
 
-  const replaceLotteryLinesFromEntries = (entries: LotteryMasterEntry[]) => {
-    const snapshotLines = buildLotteryLinesFromMasterEntries(
-      entries.filter((entry) => entry.is_active)
-    );
+  useEffect(() => {
+    if (!autoPrepareNextEntry || lotteryLineCount > 0) {
+      return;
+    }
+    const activeEntries = sortedLotteryCatalog.filter((entry) => entry.is_active);
+    if (activeEntries.length === 0) {
+      return;
+    }
+    const snapshotLines = buildLotteryLinesFromMasterEntries(activeEntries);
     if (snapshotLines.length === 0) {
-      return false;
+      return;
     }
     form.setValue("lottery_lines", snapshotLines, {
+      shouldDirty: false,
+      shouldTouch: false,
+      shouldValidate: false
+    });
+  }, [autoPrepareNextEntry, form, lotteryLineCount, sortedLotteryCatalog]);
+
+  const resetLotteryConfigForm = (open = false) => {
+    setLotteryConfigForm(
+      createLotteryConfigFormState(sortedLotteryCatalog, store.scratch_bundle_size_default)
+    );
+    setIsLotteryConfigFormOpen(open);
+  };
+
+  const openCreateLotteryConfigForm = () => {
+    resetLotteryConfigForm(true);
+  };
+
+  const openEditLotteryConfigForm = (entry: LotteryMasterEntry) => {
+    setLotteryConfigForm({
+      id: entry.id,
+      display_number: entry.display_number,
+      name: entry.name,
+      ticket_price: entry.ticket_price,
+      default_bundle_size: entry.default_bundle_size,
+      is_active: entry.is_active,
+      is_locked: entry.is_locked,
+      notes: entry.notes ?? ""
+    });
+    setIsLotteryConfigFormOpen(true);
+  };
+
+  const appendLotteryToCurrentDraft = (entry: LotteryMasterEntry) => {
+    const currentLines = form.getValues("lottery_lines") ?? [];
+    const updatedLines = appendLotteryMasterEntryToDraftLines({
+      currentLines,
+      entry
+    });
+    if (updatedLines.length === currentLines.length) {
+      return false;
+    }
+    form.setValue("lottery_lines", updatedLines, {
       shouldDirty: true,
       shouldTouch: false,
       shouldValidate: false
@@ -217,63 +310,144 @@ export const ClosingWizard = ({
     return true;
   };
 
-  const refreshLotterySetup = async () => {
-    if (refreshingLotterySetup) {
+  const saveLotteryOfflineAndQueue = async (entry: LotteryMasterEntry) => {
+    await offlineDb.lotteryMasterEntries.put({ ...entry, _dirty: true });
+    await enqueueMutation({
+      type: "UPSERT_LOTTERY_MASTER",
+      store_id: entry.store_id,
+      entity_id: entry.id,
+      payload: entry as unknown as Record<string, unknown>
+    });
+  };
+
+  const submitLotteryConfig = () => {
+    if (!canManageLotteryConfig) {
       return;
     }
-    setRefreshingLotterySetup(true);
-
-    try {
-      const response = await fetch(
-        `/api/lottery-master?storeId=${encodeURIComponent(store.id)}&activeOnly=1`,
-        {
-          cache: "no-store"
-        }
-      );
-      const result = (await response.json().catch(() => ({}))) as {
-        data?: LotteryMasterEntry[];
-        error?: string;
-      };
-      if (!response.ok) {
-        throw new Error(result.error || "Unable to refresh lottery setup.");
-      }
-
-      const activeEntries = Array.isArray(result.data) ? result.data : [];
-      if (activeEntries.length === 0) {
-        toast.info("No active lotteries are configured for this store yet.");
-        return;
-      }
-
-      if (!replaceLotteryLinesFromEntries(activeEntries)) {
-        toast.info("No active lotteries are configured for this store yet.");
-        return;
-      }
-
-      await Promise.all(
-        activeEntries.map((entry) =>
-          offlineDb.lotteryMasterEntries.put({
-            ...entry,
-            _dirty: false
-          })
-        )
-      );
-      toast.success("Lottery setup refreshed.");
-    } catch (error) {
-      const cachedEntries = await offlineDb.lotteryMasterEntries
-        .where("store_id")
-        .equals(store.id)
-        .filter((entry) => entry.is_active)
-        .toArray();
-      if (cachedEntries.length > 0 && replaceLotteryLinesFromEntries(cachedEntries)) {
-        toast.info("Loaded cached lottery setup.");
-      } else {
-        toast.error(
-          error instanceof Error ? error.message : "Unable to refresh lottery setup."
-        );
-      }
-    } finally {
-      setRefreshingLotterySetup(false);
+    const trimmedName = lotteryConfigForm.name.trim();
+    if (!trimmedName) {
+      toast.error("Lottery name is required.");
+      return;
     }
+    if (lotteryConfigForm.ticket_price < 0) {
+      toast.error("Amount must be 0 or more.");
+      return;
+    }
+    if (lotteryConfigForm.default_bundle_size <= 0) {
+      toast.error("Bundle size must be greater than 0.");
+      return;
+    }
+    const conflict = sortedLotteryCatalog.find(
+      (entry) =>
+        entry.display_number === lotteryConfigForm.display_number &&
+        (lotteryConfigForm.id ? entry.id !== lotteryConfigForm.id : true)
+    );
+    if (conflict) {
+      toast.error("Lottery number already exists for this store.");
+      return;
+    }
+
+    const isEditing = Boolean(lotteryConfigForm.id);
+    const existingEntry = isEditing
+      ? sortedLotteryCatalog.find((entry) => entry.id === lotteryConfigForm.id)
+      : undefined;
+    const now = new Date().toISOString();
+    const payload: LotteryMasterEntry = {
+      id: lotteryConfigForm.id ?? crypto.randomUUID(),
+      store_id: store.id,
+      display_number: Math.max(1, Math.floor(lotteryConfigForm.display_number || 1)),
+      name: trimmedName,
+      ticket_price: Number(lotteryConfigForm.ticket_price || 0),
+      default_bundle_size: Math.max(1, Math.floor(lotteryConfigForm.default_bundle_size || 100)),
+      is_active: Boolean(lotteryConfigForm.is_active),
+      is_locked: Boolean(lotteryConfigForm.is_locked),
+      notes: lotteryConfigForm.notes.trim() || null,
+      created_by_app_user_id: existingEntry?.created_by_app_user_id ?? null,
+      updated_by_app_user_id: existingEntry?.updated_by_app_user_id ?? null,
+      created_at: existingEntry?.created_at ?? now,
+      updated_at: now
+    };
+
+    startTransition(async () => {
+      try {
+        const response = await fetch(
+          isEditing ? `/api/lottery-master/${payload.id}` : "/api/lottery-master",
+          {
+            method: isEditing ? "PATCH" : "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(
+              isEditing
+                ? {
+                    display_number: payload.display_number,
+                    name: payload.name,
+                    ticket_price: payload.ticket_price,
+                    default_bundle_size: payload.default_bundle_size,
+                    is_active: payload.is_active,
+                    is_locked: payload.is_locked,
+                    notes: payload.notes
+                  }
+                : {
+                    store_id: payload.store_id,
+                    display_number: payload.display_number,
+                    name: payload.name,
+                    ticket_price: payload.ticket_price,
+                    default_bundle_size: payload.default_bundle_size,
+                    is_active: payload.is_active,
+                    is_locked: payload.is_locked,
+                    notes: payload.notes
+                  }
+            )
+          }
+        );
+        const result = (await response.json().catch(() => ({}))) as {
+          data?: LotteryMasterEntry;
+          error?: string;
+        };
+        if (!response.ok) {
+          throw new Error(result.error || "Unable to save lottery.");
+        }
+
+        const saved = {
+          ...payload,
+          ...(result.data ?? {})
+        } as LotteryMasterEntry;
+        const nextCatalog = upsertLotteryMasterEntry(sortedLotteryCatalog, saved);
+        setLotteryCatalog(nextCatalog);
+        await offlineDb.lotteryMasterEntries.put({ ...saved, _dirty: false });
+        appendLotteryToCurrentDraft(saved);
+        toast.success(isEditing ? "Lottery updated." : "Lottery added.");
+        if (isEditing) {
+          resetLotteryConfigForm(false);
+        } else {
+          setLotteryConfigForm(
+            createLotteryConfigFormState(nextCatalog, store.scratch_bundle_size_default)
+          );
+          setIsLotteryConfigFormOpen(true);
+        }
+      } catch (error) {
+        const localEntry = {
+          ...payload,
+          updated_at: new Date().toISOString()
+        };
+        const nextCatalog = upsertLotteryMasterEntry(sortedLotteryCatalog, localEntry);
+        setLotteryCatalog(nextCatalog);
+        appendLotteryToCurrentDraft(localEntry);
+        await saveLotteryOfflineAndQueue(localEntry);
+        toast.info(
+          error instanceof Error
+            ? `${error.message} Saved locally and queued for sync.`
+            : "Saved locally and queued for sync."
+        );
+        if (isEditing) {
+          resetLotteryConfigForm(false);
+        } else {
+          setLotteryConfigForm(
+            createLotteryConfigFormState(nextCatalog, store.scratch_bundle_size_default)
+          );
+          setIsLotteryConfigFormOpen(true);
+        }
+      }
+    });
   };
 
   const persist = (status: ClosingFormValues["status"]) =>
@@ -293,6 +467,24 @@ export const ClosingWizard = ({
             lottery_amount_due: totals.lottery_amount_due
           };
           await saveAndMaybeSync({ values: payload, role });
+
+          if (autoPrepareNextEntry && status !== "DRAFT") {
+            const nextDraft = buildNextClosingDraftForLotteryWorkflow({
+              store,
+              lotteryMasterEntries: sortedLotteryCatalog,
+              businessDate: payload.business_date
+            });
+            form.reset(nextDraft);
+            setStepIndex(2);
+            setLastSavedStatus("DRAFT");
+            await offlineDb.closings.put({
+              ...nextDraft,
+              updated_at: new Date().toISOString(),
+              _dirty: false
+            });
+            toast.success("Closing saved. Lottery rows are ready for the next entry.");
+            return;
+          }
 
           setLastSavedStatus(status);
           form.setValue("status", status);
@@ -505,16 +697,23 @@ export const ClosingWizard = ({
               <div>
                 <h3 className="text-lg font-semibold">Lottery Scratch Tickets</h3>
                 <p className="text-xs text-white/65">
-                  Start is the higher ticket number. End is the lower number.
+                  Locked lottery rows are reusable nightly. Enter Start and End only.
                 </p>
               </div>
-              {role === "ADMIN" && (
-                <Link
-                  href="/settings/lottery"
+              {canManageLotteryConfig && (
+                <button
+                  type="button"
                   className="rounded-lg border border-white/20 px-3 py-2 text-xs font-semibold hover:bg-white/10"
+                  onClick={() => {
+                    if (isLotteryConfigFormOpen) {
+                      resetLotteryConfigForm(false);
+                      return;
+                    }
+                    openCreateLotteryConfigForm();
+                  }}
                 >
-                  Manage Lottery Setup
-                </Link>
+                  {isLotteryConfigFormOpen ? "Close" : "Add Lottery"}
+                </button>
               )}
             </div>
 
@@ -547,6 +746,147 @@ export const ClosingWizard = ({
               })}
             />
 
+            {canManageLotteryConfig && isLotteryConfigFormOpen && (
+              <div className="rounded-xl border border-white/15 bg-black/20 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h4 className="text-sm font-semibold uppercase tracking-wide text-white/80">
+                    {lotteryConfigForm.id ? "Edit Locked Lottery" : "Add Lottery"}
+                  </h4>
+                  <button
+                    type="button"
+                    className="rounded border border-white/20 px-2 py-1 text-[11px] hover:bg-white/10"
+                    onClick={() => resetLotteryConfigForm(false)}
+                  >
+                    Close
+                  </button>
+                </div>
+                <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                  <div>
+                    <label className="field-label">Lottery Number</label>
+                    <input
+                      className="field"
+                      type="number"
+                      min={1}
+                      value={lotteryConfigForm.display_number}
+                      onChange={(event) =>
+                        setLotteryConfigForm((current) => ({
+                          ...current,
+                          display_number: Number(event.target.value || 1)
+                        }))
+                      }
+                    />
+                  </div>
+                  <div>
+                    <label className="field-label">Lottery Name</label>
+                    <input
+                      className="field"
+                      value={lotteryConfigForm.name}
+                      onChange={(event) =>
+                        setLotteryConfigForm((current) => ({
+                          ...current,
+                          name: event.target.value
+                        }))
+                      }
+                    />
+                  </div>
+                  <div>
+                    <label className="field-label">Amount</label>
+                    <input
+                      className="field"
+                      type="number"
+                      step="0.01"
+                      min={0}
+                      value={lotteryConfigForm.ticket_price}
+                      onChange={(event) =>
+                        setLotteryConfigForm((current) => ({
+                          ...current,
+                          ticket_price: Number(event.target.value || 0)
+                        }))
+                      }
+                    />
+                  </div>
+                  <div>
+                    <label className="field-label">Default Bundle Size</label>
+                    <input
+                      className="field"
+                      type="number"
+                      min={1}
+                      value={lotteryConfigForm.default_bundle_size}
+                      onChange={(event) =>
+                        setLotteryConfigForm((current) => ({
+                          ...current,
+                          default_bundle_size: Number(event.target.value || 100)
+                        }))
+                      }
+                    />
+                  </div>
+                  <label className="mt-5 inline-flex items-center gap-2 text-xs text-white/80">
+                    <input
+                      type="checkbox"
+                      checked={lotteryConfigForm.is_active}
+                      onChange={(event) =>
+                        setLotteryConfigForm((current) => ({
+                          ...current,
+                          is_active: event.target.checked
+                        }))
+                      }
+                    />
+                    Active
+                  </label>
+                  <label className="mt-5 inline-flex items-center gap-2 text-xs text-white/80">
+                    <input
+                      type="checkbox"
+                      checked={lotteryConfigForm.is_locked}
+                      onChange={(event) =>
+                        setLotteryConfigForm((current) => ({
+                          ...current,
+                          is_locked: event.target.checked
+                        }))
+                      }
+                    />
+                    Locked
+                  </label>
+                </div>
+                <div className="mt-2">
+                  <label className="field-label">Notes (optional)</label>
+                  <textarea
+                    className="field"
+                    rows={2}
+                    value={lotteryConfigForm.notes}
+                    onChange={(event) =>
+                      setLotteryConfigForm((current) => ({
+                        ...current,
+                        notes: event.target.value
+                      }))
+                    }
+                  />
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    className="rounded-lg border border-brand-crimson/40 bg-brand-crimson/20 px-3 py-2 text-xs font-semibold text-white hover:bg-brand-crimson/30 disabled:opacity-60"
+                    disabled={pending}
+                    onClick={submitLotteryConfig}
+                  >
+                    {pending
+                      ? "Saving..."
+                      : lotteryConfigForm.id
+                        ? "Save Lottery"
+                        : "Add Lottery"}
+                  </button>
+                  {lotteryConfigForm.id && (
+                    <button
+                      type="button"
+                      className="rounded border border-white/20 px-3 py-2 text-xs hover:bg-white/10"
+                      onClick={openCreateLotteryConfigForm}
+                    >
+                      Add New
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
             {lotteryArray.fields.length > 0 && (
               <div className="overflow-x-auto rounded-xl border border-white/10 bg-black/20">
                 <table className="min-w-full text-sm">
@@ -565,6 +905,13 @@ export const ClosingWizard = ({
                     {lotteryRowIndexes.map((index) => {
                       const line = watched.lottery_lines?.[index];
                       const field = lotteryArray.fields[index];
+                      const sourceEntry =
+                        line?.lottery_master_entry_id === null ||
+                        line?.lottery_master_entry_id === undefined
+                          ? null
+                          : sortedLotteryCatalog.find(
+                              (entry) => entry.id === line.lottery_master_entry_id
+                            ) ?? null;
                       const lineSnapshot = {
                         id: field.id,
                         display_number_snapshot: Number(line?.display_number_snapshot ?? index + 1),
@@ -643,10 +990,28 @@ export const ClosingWizard = ({
                                   value === "" || value === null || value === undefined
                                     ? 0
                                     : Number(value)
-                              })}
+                                })}
                             />
                           </td>
-                          <td className="px-3 py-2">{lineSnapshot.lottery_name_snapshot}</td>
+                          <td className="px-3 py-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span>{lineSnapshot.lottery_name_snapshot}</span>
+                              {lineSnapshot.is_locked_snapshot && (
+                                <span className="rounded-full border border-amber-300/35 bg-amber-500/20 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-100">
+                                  Locked
+                                </span>
+                              )}
+                              {canManageLotteryConfig && sourceEntry && (
+                                <button
+                                  type="button"
+                                  className="rounded border border-white/20 px-2 py-0.5 text-[10px] hover:bg-white/10"
+                                  onClick={() => openEditLotteryConfigForm(sourceEntry)}
+                                >
+                                  Edit
+                                </button>
+                              )}
+                            </div>
+                          </td>
                           <td className="px-3 py-2">
                             {formatCurrency(Number(lineSnapshot.ticket_price_snapshot ?? 0))}
                           </td>
@@ -658,7 +1023,7 @@ export const ClosingWizard = ({
                               {...form.register(`lottery_lines.${index}.start_number`, {
                                 setValueAs: (value) =>
                                   value === "" || value === null || value === undefined
-                                    ? 0
+                                    ? undefined
                                     : Number(value)
                               })}
                             />
@@ -671,7 +1036,7 @@ export const ClosingWizard = ({
                               {...form.register(`lottery_lines.${index}.end_number`, {
                                 setValueAs: (value) =>
                                   value === "" || value === null || value === undefined
-                                    ? 0
+                                    ? undefined
                                     : Number(value)
                               })}
                             />
@@ -701,25 +1066,15 @@ export const ClosingWizard = ({
                     No active lotteries are configured for this store yet.
                   </p>
                   <p className="mt-1 text-xs text-white/75">
-                    Add scratch ticket lotteries in Lottery Setup so they appear here
-                    automatically.
+                    Add a lottery here and it will appear immediately for nightly entry.
                   </p>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    <Link
-                      href="/settings/lottery"
-                      className="inline-flex items-center rounded-lg border border-brand-crimson/40 bg-brand-crimson/20 px-3 py-2 text-xs font-semibold text-white hover:bg-brand-crimson/30"
-                    >
-                      Open Lottery Setup
-                    </Link>
-                    <button
-                      type="button"
-                      className="rounded-lg border border-white/20 px-3 py-2 text-xs font-semibold hover:bg-white/10 disabled:opacity-60"
-                      disabled={refreshingLotterySetup}
-                      onClick={() => void refreshLotterySetup()}
-                    >
-                      {refreshingLotterySetup ? "Refreshing..." : "Refresh Lotteries"}
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    className="mt-3 rounded-lg border border-brand-crimson/40 bg-brand-crimson/20 px-3 py-2 text-xs font-semibold text-white hover:bg-brand-crimson/30"
+                    onClick={openCreateLotteryConfigForm}
+                  >
+                    Add Lottery
+                  </button>
                 </div>
               ) : (
                 <p className="rounded-lg border border-amber-300/35 bg-amber-500/10 p-3 text-xs text-amber-100">
