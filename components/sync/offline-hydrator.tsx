@@ -45,6 +45,14 @@ export const OfflineHydrator = ({
             closing.tax_amount_manual === null || closing.tax_amount_manual === undefined
               ? null
               : Number(closing.tax_amount_manual),
+          lottery_total_scratch_revenue: Number(
+            closing.lottery_total_scratch_revenue ?? closing.lottery_total_sales ?? 0
+          ),
+          lottery_online_amount: Number(closing.lottery_online_amount ?? closing.draw_sales ?? 0),
+          lottery_paid_out_amount: Number(
+            closing.lottery_paid_out_amount ?? closing.lottery_total_payouts ?? 0
+          ),
+          lottery_amount_due: Number(closing.lottery_amount_due ?? closing.lottery_net ?? 0),
           draw_sales: Number(closing.draw_sales ?? 0),
           draw_payouts: Number(closing.draw_payouts ?? 0),
           cash_amount: Number(closing.cash_amount ?? 0),

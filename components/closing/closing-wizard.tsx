@@ -71,6 +71,17 @@ export const ClosingWizard = ({
   const lotteryLineCount = watched.lottery_lines?.length ?? 0;
   const lockForStaff = role === "STAFF" && lastSavedStatus !== "DRAFT";
   const readOnly = role === "STAFF" && (lockForStaff || watched.status === "LOCKED");
+  const lotteryRowIndexes = useMemo(
+    () =>
+      lotteryArray.fields
+        .map((_, index) => index)
+        .sort(
+          (a, b) =>
+            Number(watched.lottery_lines?.[a]?.display_number_snapshot ?? a + 1) -
+            Number(watched.lottery_lines?.[b]?.display_number_snapshot ?? b + 1)
+        ),
+    [lotteryArray.fields, watched.lottery_lines]
+  );
 
   const totals = useMemo(() => {
     return computeClosingTotals({
@@ -83,12 +94,13 @@ export const ClosingWizard = ({
         end_number: Number(line.end_number ?? 0),
         inclusive_count: Boolean(line.inclusive_count),
         ticket_price_snapshot: Number(line.ticket_price_snapshot ?? line.ticket_price ?? 0),
-        payouts: Number(line.payouts ?? line.scratch_payouts ?? 0),
         tickets_sold_override: line.tickets_sold_override ?? null,
         bundle_size_snapshot: Number(
           line.bundle_size_snapshot ?? line.bundle_size ?? store.scratch_bundle_size_default
         )
       })),
+      lottery_online_amount: Number(deferredWatched.lottery_online_amount ?? 0),
+      lottery_paid_out_amount: Number(deferredWatched.lottery_paid_out_amount ?? 0),
       draw_sales: Number(deferredWatched.draw_sales ?? 0),
       draw_payouts: Number(deferredWatched.draw_payouts ?? 0),
       billpayLines: (deferredWatched.billpay_lines ?? []).map((line) => ({
@@ -111,6 +123,19 @@ export const ClosingWizard = ({
       }
     });
   }, [deferredWatched, store.scratch_bundle_size_default]);
+
+  useEffect(() => {
+    form.setValue("lottery_total_scratch_revenue", totals.lottery_total_scratch_revenue, {
+      shouldDirty: false,
+      shouldTouch: false,
+      shouldValidate: false
+    });
+    form.setValue("lottery_amount_due", totals.lottery_amount_due, {
+      shouldDirty: false,
+      shouldTouch: false,
+      shouldValidate: false
+    });
+  }, [form, totals.lottery_amount_due, totals.lottery_total_scratch_revenue]);
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -187,7 +212,9 @@ export const ClosingWizard = ({
           const payload: ClosingFormValues = {
             ...values,
             status,
-            tax_amount_manual: values.tax_override_enabled ? values.tax_amount_manual : null
+            tax_amount_manual: values.tax_override_enabled ? values.tax_amount_manual : null,
+            lottery_total_scratch_revenue: totals.lottery_total_scratch_revenue,
+            lottery_amount_due: totals.lottery_amount_due
           };
           await saveAndMaybeSync({ values: payload, role });
 
@@ -207,33 +234,6 @@ export const ClosingWizard = ({
         }
       });
     })();
-
-  const appendLotteryLine = () => {
-    const existingLines = form.getValues("lottery_lines") ?? [];
-    const nextDisplayNumber =
-      existingLines.reduce(
-        (maxValue, line) => Math.max(maxValue, Number(line.display_number_snapshot ?? 0)),
-        0
-      ) + 1;
-
-    lotteryArray.append({
-      id: crypto.randomUUID(),
-      lottery_master_entry_id: null,
-      display_number_snapshot: Math.max(1, nextDisplayNumber),
-      lottery_name_snapshot: `Lottery ${Math.max(1, nextDisplayNumber)}`,
-      ticket_price_snapshot: 0,
-      bundle_size_snapshot: store.scratch_bundle_size_default,
-      is_locked_snapshot: false,
-      pack_id: "",
-      start_number: 0,
-      end_number: 0,
-      inclusive_count: false,
-      tickets_sold_override: null,
-      manual_override_reason: "",
-      override_reason: "",
-      payouts: 0
-    });
-  };
 
   const generatePdf = async () => {
     if (!allowPrintPdf && role === "STAFF") {
@@ -425,230 +425,242 @@ export const ClosingWizard = ({
 
         {stepIndex === 2 && (
           <section className="space-y-4">
-            <div className="flex items-center justify-between gap-2">
-              <h3 className="text-lg font-semibold">Lottery Scratch + Draw</h3>
-              {!readOnly && (
-                <button
-                  type="button"
-                  className="rounded border border-white/20 px-3 py-1 text-xs hover:bg-white/10"
-                  onClick={appendLotteryLine}
-                >
-                  Add New Lottery
-                </button>
-              )}
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-lg font-semibold">Lottery Scratch Tickets</h3>
+              <p className="text-xs text-white/65">
+                Start is the higher ticket number. End is the lower number.
+              </p>
             </div>
-            {lotteryArray.fields.map((field, index) => {
-              const line = watched.lottery_lines?.[index];
-              const lineLocked = Boolean(line?.is_locked_snapshot);
-              const lineSnapshot = {
-                id: field.id,
-                display_number_snapshot: Number(line?.display_number_snapshot ?? index + 1),
-                lottery_name_snapshot: String(line?.lottery_name_snapshot ?? "Lottery"),
-                ticket_price_snapshot: Number(line?.ticket_price_snapshot ?? 0),
-                bundle_size_snapshot: Number(
-                  line?.bundle_size_snapshot ?? store.scratch_bundle_size_default
-                ),
-                is_locked_snapshot: Boolean(line?.is_locked_snapshot),
-                start_number: Number(line?.start_number ?? 0),
-                end_number: Number(line?.end_number ?? 0),
-                inclusive_count: Boolean(line?.inclusive_count),
-                tickets_sold_override: line?.tickets_sold_override ?? null,
-                payouts: Number(line?.payouts ?? 0),
-                manual_override_reason: String(line?.manual_override_reason ?? "")
-              };
-              const computed = computeSnapshotLineTotals(lineSnapshot);
-              const rangeState = validateLotteryRange({
-                startNumber: lineSnapshot.start_number,
-                endNumber: lineSnapshot.end_number,
-                inclusiveCount: lineSnapshot.inclusive_count,
-                bundleSize: lineSnapshot.bundle_size_snapshot
-              });
-              return (
-                <div key={field.id} className="rounded-xl border border-white/10 bg-black/25 p-3">
-                  <div className="mb-3 flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-3">
-                      <span className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-brand-crimson/50 bg-brand-crimson/20 text-sm font-semibold">
-                        {lineSnapshot.display_number_snapshot}
-                      </span>
-                      <div>
-                        <p className="text-sm font-semibold">
-                          {lineSnapshot.lottery_name_snapshot || `Lottery ${index + 1}`}
-                        </p>
-                        <p className="text-xs text-white/70">
-                          Amount {formatCurrency(lineSnapshot.ticket_price_snapshot)} · Bundle{" "}
-                          {lineSnapshot.bundle_size_snapshot || store.scratch_bundle_size_default}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-1">
-                      {lineSnapshot.is_locked_snapshot && (
-                        <span className="rounded-full border border-amber-300/40 bg-amber-500/20 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-100">
-                          Locked
-                        </span>
-                      )}
-                      {!readOnly && (
-                        <button
-                          type="button"
-                          className="rounded border border-white/20 px-2 py-1 text-[11px] hover:bg-white/10"
-                          onClick={() =>
-                            form.setValue(
-                              `lottery_lines.${index}.is_locked_snapshot`,
-                              !lineLocked,
-                              {
-                                shouldDirty: true,
-                                shouldTouch: true
-                              }
-                            )
-                          }
-                        >
-                          {lineLocked ? "Unlock" : "Lock"}
-                        </button>
-                      )}
-                      {!readOnly && (
-                        <button
-                          type="button"
-                          className="rounded border border-red-300/40 px-2 py-1 text-[11px] text-red-100 hover:bg-red-500/20"
-                          onClick={() => lotteryArray.remove(index)}
-                        >
-                          Remove
-                        </button>
-                      )}
-                    </div>
-                  </div>
 
-                  <input
-                    type="hidden"
-                    {...form.register(`lottery_lines.${index}.lottery_master_entry_id`)}
-                  />
-                  <input
-                    type="hidden"
-                    {...form.register(`lottery_lines.${index}.display_number_snapshot`, {
-                      valueAsNumber: true
+            <input
+              type="hidden"
+              {...form.register("draw_sales", {
+                setValueAs: (value) =>
+                  value === "" || value === null || value === undefined ? 0 : Number(value)
+              })}
+            />
+            <input
+              type="hidden"
+              {...form.register("draw_payouts", {
+                setValueAs: (value) =>
+                  value === "" || value === null || value === undefined ? 0 : Number(value)
+              })}
+            />
+            <input
+              type="hidden"
+              {...form.register("lottery_total_scratch_revenue", {
+                setValueAs: (value) =>
+                  value === "" || value === null || value === undefined ? 0 : Number(value)
+              })}
+            />
+            <input
+              type="hidden"
+              {...form.register("lottery_amount_due", {
+                setValueAs: (value) =>
+                  value === "" || value === null || value === undefined ? 0 : Number(value)
+              })}
+            />
+
+            {lotteryArray.fields.length > 0 && (
+              <div className="overflow-x-auto rounded-xl border border-white/10 bg-black/20">
+                <table className="min-w-full text-sm">
+                  <thead className="bg-white/5 text-left text-[11px] uppercase tracking-wide text-white/65">
+                    <tr>
+                      <th className="px-3 py-2">#</th>
+                      <th className="px-3 py-2">Name</th>
+                      <th className="px-3 py-2">Amount</th>
+                      <th className="px-3 py-2">Start</th>
+                      <th className="px-3 py-2">End</th>
+                      <th className="px-3 py-2">Sold</th>
+                      <th className="px-3 py-2">Revenue</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {lotteryRowIndexes.map((index) => {
+                      const line = watched.lottery_lines?.[index];
+                      const field = lotteryArray.fields[index];
+                      const lineSnapshot = {
+                        id: field.id,
+                        display_number_snapshot: Number(line?.display_number_snapshot ?? index + 1),
+                        lottery_name_snapshot: String(line?.lottery_name_snapshot ?? "Lottery"),
+                        ticket_price_snapshot: Number(line?.ticket_price_snapshot ?? 0),
+                        bundle_size_snapshot: Number(
+                          line?.bundle_size_snapshot ?? store.scratch_bundle_size_default
+                        ),
+                        is_locked_snapshot: Boolean(line?.is_locked_snapshot),
+                        start_number: Number(line?.start_number ?? 0),
+                        end_number: Number(line?.end_number ?? 0),
+                        inclusive_count: Boolean(line?.inclusive_count),
+                        tickets_sold_override: line?.tickets_sold_override ?? null,
+                        payouts: Number(line?.payouts ?? 0),
+                        manual_override_reason: String(line?.manual_override_reason ?? "")
+                      };
+                      const computed = computeSnapshotLineTotals(lineSnapshot);
+                      const rangeState = validateLotteryRange({
+                        startNumber: lineSnapshot.start_number,
+                        endNumber: lineSnapshot.end_number,
+                        inclusiveCount: false,
+                        bundleSize: lineSnapshot.bundle_size_snapshot
+                      });
+
+                      return (
+                        <tr key={field.id} className="border-t border-white/10 align-top">
+                          <td className="px-3 py-2 font-semibold">
+                            {lineSnapshot.display_number_snapshot}
+                            <input
+                              type="hidden"
+                              {...form.register(`lottery_lines.${index}.lottery_master_entry_id`)}
+                            />
+                            <input
+                              type="hidden"
+                              {...form.register(`lottery_lines.${index}.display_number_snapshot`, {
+                                valueAsNumber: true
+                              })}
+                            />
+                            <input
+                              type="hidden"
+                              {...form.register(`lottery_lines.${index}.lottery_name_snapshot`)}
+                            />
+                            <input
+                              type="hidden"
+                              {...form.register(`lottery_lines.${index}.ticket_price_snapshot`, {
+                                valueAsNumber: true
+                              })}
+                            />
+                            <input
+                              type="hidden"
+                              {...form.register(`lottery_lines.${index}.bundle_size_snapshot`, {
+                                valueAsNumber: true
+                              })}
+                            />
+                            <input
+                              type="hidden"
+                              {...form.register(`lottery_lines.${index}.is_locked_snapshot`)}
+                            />
+                            <input
+                              type="hidden"
+                              {...form.register(`lottery_lines.${index}.inclusive_count`)}
+                            />
+                            <input
+                              type="hidden"
+                              {...form.register(`lottery_lines.${index}.payouts`, {
+                                setValueAs: (value) =>
+                                  value === "" || value === null || value === undefined
+                                    ? 0
+                                    : Number(value)
+                              })}
+                            />
+                            <input
+                              type="hidden"
+                              {...form.register(`lottery_lines.${index}.scratch_payouts`, {
+                                setValueAs: (value) =>
+                                  value === "" || value === null || value === undefined
+                                    ? 0
+                                    : Number(value)
+                              })}
+                            />
+                          </td>
+                          <td className="px-3 py-2">{lineSnapshot.lottery_name_snapshot}</td>
+                          <td className="px-3 py-2">
+                            {formatCurrency(Number(lineSnapshot.ticket_price_snapshot ?? 0))}
+                          </td>
+                          <td className="px-3 py-2">
+                            <input
+                              className="field w-28"
+                              type="number"
+                              disabled={readOnly}
+                              {...form.register(`lottery_lines.${index}.start_number`, {
+                                setValueAs: (value) =>
+                                  value === "" || value === null || value === undefined
+                                    ? 0
+                                    : Number(value)
+                              })}
+                            />
+                          </td>
+                          <td className="px-3 py-2">
+                            <input
+                              className="field w-28"
+                              type="number"
+                              disabled={readOnly}
+                              {...form.register(`lottery_lines.${index}.end_number`, {
+                                setValueAs: (value) =>
+                                  value === "" || value === null || value === undefined
+                                    ? 0
+                                    : Number(value)
+                              })}
+                            />
+                            {!rangeState.isValid && (
+                              <p className="mt-1 text-[10px] text-red-300">{rangeState.error}</p>
+                            )}
+                            {rangeState.warning && (
+                              <p className="mt-1 text-[10px] text-amber-200">{rangeState.warning}</p>
+                            )}
+                          </td>
+                          <td className="px-3 py-2 font-semibold">{computed.ticketsSold}</td>
+                          <td className="px-3 py-2 font-semibold">
+                            {formatCurrency(computed.salesAmount)}
+                          </td>
+                        </tr>
+                      );
                     })}
-                  />
-                  <input
-                    type="hidden"
-                    {...form.register(`lottery_lines.${index}.bundle_size_snapshot`, {
-                      valueAsNumber: true
-                    })}
-                  />
-                  <input
-                    type="hidden"
-                    {...form.register(`lottery_lines.${index}.is_locked_snapshot`)}
-                  />
+                  </tbody>
+                </table>
+              </div>
+            )}
 
-                  <div className="grid gap-2 sm:grid-cols-2">
-                    <div>
-                      <label className="field-label">Lottery Name</label>
-                      <input
-                        className="field"
-                        disabled={readOnly || lineLocked}
-                        placeholder="Lottery name"
-                        {...form.register(`lottery_lines.${index}.lottery_name_snapshot`)}
-                      />
-                    </div>
-                    <div>
-                      <label className="field-label">Amount</label>
-                      <input
-                        className="field"
-                        type="number"
-                        step="0.01"
-                        min={0}
-                        disabled={readOnly || lineLocked}
-                        {...form.register(`lottery_lines.${index}.ticket_price_snapshot`, {
-                          valueAsNumber: true
-                        })}
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid gap-2 sm:grid-cols-3">
-                    <div>
-                      <label className="field-label">Start Number</label>
-                      <input
-                        className="field"
-                        type="number"
-                        disabled={readOnly}
-                        {...form.register(`lottery_lines.${index}.start_number`, {
-                          valueAsNumber: true
-                        })}
-                      />
-                    </div>
-                    <div>
-                      <label className="field-label">End Number</label>
-                      <input
-                        className="field"
-                        type="number"
-                        disabled={readOnly}
-                        {...form.register(`lottery_lines.${index}.end_number`, {
-                          valueAsNumber: true
-                        })}
-                      />
-                    </div>
-                    <div>
-                      <label className="field-label">Payouts / Paidouts</label>
-                      <input
-                        className="field"
-                        type="number"
-                        step="0.01"
-                        disabled={readOnly}
-                        {...form.register(`lottery_lines.${index}.payouts`, {
-                          valueAsNumber: true
-                        })}
-                      />
-                    </div>
-                  </div>
-
-                  <div className="mt-2 grid gap-2 sm:grid-cols-4">
-                    <p className="rounded-lg border border-white/10 px-2 py-1.5 text-xs text-white/80">
-                      Tickets Sold: <strong>{computed.ticketsSold}</strong>
-                    </p>
-                    <p className="rounded-lg border border-white/10 px-2 py-1.5 text-xs text-white/80">
-                      Sales: <strong>{formatCurrency(computed.salesAmount)}</strong>
-                    </p>
-                    <p className="rounded-lg border border-white/10 px-2 py-1.5 text-xs text-white/80">
-                      Payouts: <strong>{formatCurrency(computed.payouts)}</strong>
-                    </p>
-                    <p className="rounded-lg border border-white/10 px-2 py-1.5 text-xs text-white/80">
-                      Net: <strong>{formatCurrency(computed.netAmount)}</strong>
-                    </p>
-                  </div>
-                  {!rangeState.isValid && (
-                    <p className="mt-2 text-xs text-red-300">{rangeState.error}</p>
-                  )}
-                  {rangeState.warning && (
-                    <p className="mt-1 text-xs text-amber-200">{rangeState.warning}</p>
-                  )}
-                </div>
-              );
-            })}
             {lotteryArray.fields.length === 0 && (
               <p className="rounded-lg border border-amber-300/35 bg-amber-500/10 p-3 text-xs text-amber-100">
-                No lottery lines yet. Click Add Lottery to create one with name and amount.
+                No active lottery setup found for this store. Ask an admin to configure Lottery
+                Master entries in Settings.
               </p>
             )}
-            <div className="grid gap-2 sm:grid-cols-2">
+
+            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+              <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2">
+                <p className="text-[11px] uppercase tracking-wide text-white/65">
+                  Total Scratch Revenue
+                </p>
+                <p className="mt-1 text-lg font-bold">
+                  {formatCurrency(totals.lottery_total_scratch_revenue)}
+                </p>
+              </div>
               <div>
-                <label className="field-label">Draw sales</label>
+                <label className="field-label">Online</label>
                 <input
-                  type="number"
-                  step="0.01"
                   className="field"
+                  type="number"
+                  min={0}
+                  step="0.01"
                   disabled={readOnly}
-                  {...form.register("draw_sales", { valueAsNumber: true })}
+                  {...form.register("lottery_online_amount", {
+                    setValueAs: (value) =>
+                      value === "" || value === null || value === undefined ? 0 : Number(value)
+                  })}
                 />
               </div>
               <div>
-                <label className="field-label">Draw payouts</label>
+                <label className="field-label">Paid Out</label>
                 <input
-                  type="number"
-                  step="0.01"
                   className="field"
+                  type="number"
+                  min={0}
+                  step="0.01"
                   disabled={readOnly}
-                  {...form.register("draw_payouts", { valueAsNumber: true })}
+                  {...form.register("lottery_paid_out_amount", {
+                    setValueAs: (value) =>
+                      value === "" || value === null || value === undefined ? 0 : Number(value)
+                  })}
                 />
+              </div>
+              <div className="rounded-lg border border-brand-crimson/35 bg-brand-crimson/10 px-3 py-2">
+                <p className="text-[11px] uppercase tracking-wide text-white/75">Amount Due</p>
+                <p className="mt-1 text-lg font-bold">{formatCurrency(totals.lottery_amount_due)}</p>
               </div>
             </div>
+
+            <p className="text-xs text-white/65">
+              Amount Due = (Total Scratch Revenue - Paid Out) + Online
+            </p>
           </section>
         )}
 
@@ -844,6 +856,13 @@ export const ClosingWizard = ({
               </p>
               <p className="rounded-lg border border-white/10 p-3 text-sm">
                 Lottery net: <strong>{formatCurrency(totals.lottery_net)}</strong>
+              </p>
+              <p className="rounded-lg border border-white/10 p-3 text-sm">
+                Scratch revenue:{" "}
+                <strong>{formatCurrency(totals.lottery_total_scratch_revenue)}</strong>
+              </p>
+              <p className="rounded-lg border border-white/10 p-3 text-sm">
+                Lottery amount due: <strong>{formatCurrency(totals.lottery_amount_due)}</strong>
               </p>
               <p className="rounded-lg border border-white/10 p-3 text-sm">
                 Over/short: <strong>{formatCurrency(totals.cash_over_short)}</strong>

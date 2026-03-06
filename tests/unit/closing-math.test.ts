@@ -12,11 +12,9 @@ describe("closing math", () => {
 
   it("computes scratch tickets sold with and without inclusive mode", () => {
     expect(
-      computeScratchTicketsSold({ start: 100, end: 112, inclusive: false }).ticketsSold
-    ).toBe(12);
-    expect(
-      computeScratchTicketsSold({ start: 100, end: 112, inclusive: true }).ticketsSold
-    ).toBe(13);
+      computeScratchTicketsSold({ start: 100, end: 98, inclusive: false }).ticketsSold
+    ).toBe(2);
+    expect(computeScratchTicketsSold({ start: 39, end: 38, inclusive: true }).ticketsSold).toBe(1);
   });
 
   it("computes over short", () => {
@@ -33,13 +31,14 @@ describe("closing math", () => {
       ],
       lotteryScratchLines: [
         {
-          start_ticket_number: 10,
-          end_ticket_number: 15,
+          start_ticket_number: 15,
+          end_ticket_number: 10,
           inclusive_count: false,
-          ticket_price: 2,
-          scratch_payouts: 5
+          ticket_price: 2
         }
       ],
+      lottery_online_amount: 3,
+      lottery_paid_out_amount: 5,
       draw_sales: 10,
       draw_payouts: 2,
       billpayLines: [{ amount_collected: 20, fee_revenue: 4, txn_count: 2 }],
@@ -58,10 +57,13 @@ describe("closing math", () => {
 
     expect(totals.taxable_sales).toBe(50);
     expect(totals.non_taxable_sales).toBe(25);
-    expect(totals.lottery_total_sales).toBe(20);
+    expect(totals.lottery_total_scratch_revenue).toBe(10);
+    expect(totals.lottery_amount_due).toBe(8);
+    expect(totals.lottery_total_sales).toBe(13);
+    expect(totals.lottery_total_payouts).toBe(5);
     expect(totals.billpay_collected_total).toBe(20);
-    expect(totals.gross_collected).toBe(115);
+    expect(totals.gross_collected).toBe(108);
     expect(totals.tax_amount).toBe(5);
-    expect(totals.cash_over_short).toBe(0);
+    expect(totals.cash_over_short).toBe(7);
   });
 });

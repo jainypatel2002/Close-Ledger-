@@ -21,35 +21,52 @@ export interface ValidateLotteryRangeResult {
   ticketsSold: number;
 }
 
+const toWhole = (value: number) => (Number.isFinite(value) ? Math.floor(value) : 0);
+
+export const computeScratchSold = (startNumber: number, endNumber: number): number =>
+  Math.max(0, toWhole(startNumber) - toWhole(endNumber));
+
+export const computeScratchRevenue = (totalSold: number, amount: number): number =>
+  toMoney(Math.max(0, totalSold) * Math.max(0, amount));
+
+export const computeTotalScratchRevenue = (
+  lines: Array<{ revenue?: number; totalSold?: number; amount?: number }>
+) =>
+  toMoney(
+    lines.reduce((sum, line) => {
+      if (Number.isFinite(line.revenue)) {
+        return sum + Math.max(0, Number(line.revenue ?? 0));
+      }
+      return sum + computeScratchRevenue(Number(line.totalSold ?? 0), Number(line.amount ?? 0));
+    }, 0)
+  );
+
+export const computeLotteryAmountDue = (
+  totalScratchRevenue: number,
+  paidOut: number,
+  online: number
+) => toMoney(Math.max(0, totalScratchRevenue) - Math.max(0, paidOut) + Math.max(0, online));
+
+// Backward-compatible wrapper used in existing modules/tests.
 export const computeTicketsSold = ({
   startNumber,
   endNumber,
-  inclusiveCount,
   manualOverride
 }: ComputeTicketsSoldInput): number => {
   if (manualOverride !== undefined && manualOverride !== null) {
-    return Math.max(0, Math.floor(manualOverride));
+    return Math.max(0, toWhole(manualOverride));
   }
-
-  const safeStart = Number.isFinite(startNumber) ? Math.floor(startNumber) : 0;
-  const safeEnd = Number.isFinite(endNumber) ? Math.floor(endNumber) : 0;
-  const diff = safeEnd - safeStart;
-
-  if (diff < 0) {
-    return 0;
-  }
-
-  const sold = inclusiveCount ? diff + 1 : diff;
-  return Math.max(0, sold);
+  return computeScratchSold(startNumber, endNumber);
 };
 
+// Backward-compatible wrapper used in existing modules/tests.
 export const computeLotterySales = ({
   ticketsSold,
   ticketPrice
 }: {
   ticketsSold: number;
   ticketPrice: number;
-}) => toMoney(Math.max(0, ticketsSold) * Math.max(0, ticketPrice));
+}) => computeScratchRevenue(ticketsSold, ticketPrice);
 
 export const computeLotteryNet = ({
   salesAmount,
@@ -62,7 +79,6 @@ export const computeLotteryNet = ({
 export const validateLotteryRange = ({
   startNumber,
   endNumber,
-  inclusiveCount,
   bundleSize
 }: ValidateLotteryRangeInput): ValidateLotteryRangeResult => {
   if (!Number.isInteger(startNumber) || !Number.isInteger(endNumber)) {
@@ -81,19 +97,15 @@ export const validateLotteryRange = ({
     };
   }
 
-  if (endNumber < startNumber) {
+  if (endNumber > startNumber) {
     return {
       isValid: false,
-      error: "End number cannot be lower than start number.",
+      error: "End number cannot be higher than start number.",
       ticketsSold: 0
     };
   }
 
-  const ticketsSold = computeTicketsSold({
-    startNumber,
-    endNumber,
-    inclusiveCount
-  });
+  const ticketsSold = computeScratchSold(startNumber, endNumber);
 
   if (bundleSize > 0 && ticketsSold > bundleSize) {
     return {
@@ -108,3 +120,4 @@ export const validateLotteryRange = ({
     ticketsSold
   };
 };
+

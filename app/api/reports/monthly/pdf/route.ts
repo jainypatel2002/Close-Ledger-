@@ -68,9 +68,11 @@ export async function POST(request: NextRequest) {
         ["Card", monthly.metrics.total_card_month],
         ["EBT", monthly.metrics.total_ebt_month],
         ["Other", monthly.metrics.total_other_payments_month],
+        ["Scratch Revenue", monthly.metrics.total_lottery_scratch_revenue_month],
+        ["Lottery Online", monthly.metrics.total_lottery_online_amount_month],
+        ["Lottery Paid Out", monthly.metrics.total_lottery_paid_out_month],
+        ["Lottery Amount Due", monthly.metrics.total_lottery_amount_due_month],
         ["Lottery Sales", monthly.metrics.total_lottery_sales_month],
-        ["Lottery Payouts", monthly.metrics.total_lottery_payouts_month],
-        ["Lottery Net", monthly.metrics.total_lottery_net_month],
         ["Billpay Collected", monthly.metrics.total_billpay_collected_month],
         ["Billpay Fee Revenue", monthly.metrics.total_billpay_fee_revenue_month],
         ["Scratch Tickets Sold", monthly.metrics.total_scratch_tickets_sold_month]

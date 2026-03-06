@@ -1,4 +1,9 @@
-import { computeLotteryNet, computeLotterySales, computeTicketsSold } from "@/lib/math/lottery";
+import {
+  computeLotteryAmountDue,
+  computeLotteryNet,
+  computeScratchRevenue,
+  computeTicketsSold
+} from "@/lib/math/lottery";
 import { toMoney } from "@/lib/utils";
 
 interface TaxInput {
@@ -43,6 +48,8 @@ interface BillpayLineInput {
 interface TotalsInput {
   categoryLines: CategoryLineInput[];
   lotteryScratchLines: ScratchLineInput[];
+  lottery_online_amount: number;
+  lottery_paid_out_amount: number;
   draw_sales: number;
   draw_payouts: number;
   billpayLines: BillpayLineInput[];
@@ -118,7 +125,6 @@ export const computeClosingTotals = (input: TotalsInput) => {
       const startNumber = Number(line.start_number ?? line.start_ticket_number ?? 0);
       const endNumber = Number(line.end_number ?? line.end_ticket_number ?? 0);
       const ticketPrice = Number(line.ticket_price_snapshot ?? line.ticket_price ?? 0);
-      const payouts = Number(line.payouts ?? line.scratch_payouts ?? 0);
       const bundleSize = Number(line.bundle_size_snapshot ?? line.bundle_size ?? 0);
 
       const { ticketsSold } = computeScratchTicketsSold({
@@ -128,20 +134,24 @@ export const computeClosingTotals = (input: TotalsInput) => {
         manualOverride: line.tickets_sold_override ?? null,
         bundleSize
       });
-      const scratchSales = computeLotterySales({ ticketsSold, ticketPrice });
-      const scratchPayouts = toMoney(Math.max(0, payouts));
+      const scratchSales = computeScratchRevenue(ticketsSold, ticketPrice);
       return {
-        totalSales: toMoney(acc.totalSales + scratchSales),
-        totalPayouts: toMoney(acc.totalPayouts + scratchPayouts)
+        totalSales: toMoney(acc.totalSales + scratchSales)
       };
     },
-    { totalSales: 0, totalPayouts: 0 }
+    { totalSales: 0 }
   );
 
-  const draw_sales = toMoney(Math.max(0, input.draw_sales));
-  const draw_payouts = toMoney(Math.max(0, input.draw_payouts));
-  const lottery_total_sales = toMoney(scratchTotals.totalSales + draw_sales);
-  const lottery_total_payouts = toMoney(scratchTotals.totalPayouts + draw_payouts);
+  const lottery_total_scratch_revenue = toMoney(scratchTotals.totalSales);
+  const lottery_online_amount = toMoney(Math.max(0, input.lottery_online_amount));
+  const lottery_paid_out_amount = toMoney(Math.max(0, input.lottery_paid_out_amount));
+  const lottery_amount_due = computeLotteryAmountDue(
+    lottery_total_scratch_revenue,
+    lottery_paid_out_amount,
+    lottery_online_amount
+  );
+  const lottery_total_sales = toMoney(lottery_total_scratch_revenue + lottery_online_amount);
+  const lottery_total_payouts = lottery_paid_out_amount;
   const lottery_net = computeLotteryNet({
     salesAmount: lottery_total_sales,
     payouts: lottery_total_payouts
@@ -166,7 +176,8 @@ export const computeClosingTotals = (input: TotalsInput) => {
   const true_revenue = toMoney(product_sales_total + lottery_net + billpay_fee_revenue);
 
   const tax_amount =
-    input.tax_mode === "MANUAL" || input.tax_amount_manual !== null
+    input.tax_mode === "MANUAL" ||
+    (input.tax_amount_manual !== null && input.tax_amount_manual !== undefined)
       ? toMoney(Math.max(0, input.tax_amount_manual ?? 0))
       : computeTax({ taxable_sales, tax_rate: input.tax_rate });
 
@@ -183,6 +194,10 @@ export const computeClosingTotals = (input: TotalsInput) => {
     product_sales_total,
     taxable_sales,
     non_taxable_sales,
+    lottery_total_scratch_revenue,
+    lottery_online_amount,
+    lottery_paid_out_amount,
+    lottery_amount_due,
     lottery_total_sales,
     lottery_total_payouts,
     lottery_net,

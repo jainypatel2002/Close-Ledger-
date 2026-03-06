@@ -20,7 +20,7 @@ interface NormalizedLotteryLine {
   inclusive_count: boolean;
   tickets_sold_override: number | null;
   manual_override_reason: string | null;
-  payouts: number;
+  legacy_payouts: number;
 }
 
 export async function POST(request: NextRequest) {
@@ -131,12 +131,19 @@ export async function POST(request: NextRequest) {
             existingLine?.lottery_master_entry_id === undefined
               ? null
               : String(existingLine.lottery_master_entry_id),
-          display_number_snapshot: Number(existingLine?.display_number_snapshot ?? index + 1),
+          display_number_snapshot: Number(
+            existingLine?.display_number_snapshot ??
+              existingLine?.lottery_number_snapshot ??
+              index + 1
+          ),
           lottery_name_snapshot: String(
             existingLine?.lottery_name_snapshot ?? existingLine?.game_name ?? "Lottery"
           ),
           ticket_price_snapshot: Number(
-            existingLine?.ticket_price_snapshot ?? existingLine?.ticket_price ?? 0
+            existingLine?.ticket_price_snapshot ??
+              existingLine?.amount_snapshot ??
+              existingLine?.ticket_price ??
+              0
           ),
           bundle_size_snapshot: Number(
             existingLine?.bundle_size_snapshot ?? existingLine?.bundle_size ?? 100
@@ -155,12 +162,14 @@ export async function POST(request: NextRequest) {
 
         const incomingSnapshot = {
           lottery_master_entry_id: line.lottery_master_entry_id ?? null,
-          display_number_snapshot: Number(line.display_number_snapshot ?? index + 1),
+          display_number_snapshot: Number(
+            line.display_number_snapshot ?? line.lottery_number_snapshot ?? index + 1
+          ),
           lottery_name_snapshot: String(
             line.lottery_name_snapshot ?? line.game_name ?? `Lottery ${index + 1}`
           ),
           ticket_price_snapshot: Number(
-            line.ticket_price_snapshot ?? line.ticket_price ?? 0
+            line.ticket_price_snapshot ?? line.amount_snapshot ?? line.ticket_price ?? 0
           ),
           bundle_size_snapshot: Number(
             line.bundle_size_snapshot ?? line.bundle_size ?? 100
@@ -215,12 +224,21 @@ export async function POST(request: NextRequest) {
           manual_override_reason: String(
             line.manual_override_reason ?? line.override_reason ?? ""
           ).trim() || null,
-          payouts: Math.max(0, Number(line.payouts ?? line.scratch_payouts ?? 0))
+          legacy_payouts: Math.max(
+            0,
+            Number(
+              line.payouts ??
+                line.scratch_payouts ??
+                existingLine?.payouts ??
+                existingLine?.scratch_payouts ??
+                0
+            )
+          )
         };
 
-        if (normalized.end_number < normalized.start_number) {
+        if (normalized.end_number > normalized.start_number) {
           throw new Error(
-            `Lottery line ${normalized.display_number_snapshot} has end number lower than start number.`
+            `Lottery line ${normalized.display_number_snapshot} has end number higher than start number.`
           );
         }
 
@@ -238,10 +256,11 @@ export async function POST(request: NextRequest) {
         end_number: line.end_number,
         inclusive_count: line.inclusive_count,
         ticket_price_snapshot: line.ticket_price_snapshot,
-        payouts: line.payouts,
         tickets_sold_override: line.tickets_sold_override ?? null,
         bundle_size_snapshot: line.bundle_size_snapshot
       })),
+      lottery_online_amount: parsed.lottery_online_amount,
+      lottery_paid_out_amount: parsed.lottery_paid_out_amount,
       draw_sales: parsed.draw_sales,
       draw_payouts: parsed.draw_payouts,
       billpayLines: parsed.billpay_lines.map((line) => ({
@@ -287,6 +306,10 @@ export async function POST(request: NextRequest) {
       non_taxable_sales: totals.non_taxable_sales,
       draw_sales: parsed.draw_sales,
       draw_payouts: parsed.draw_payouts,
+      lottery_total_scratch_revenue: totals.lottery_total_scratch_revenue,
+      lottery_online_amount: totals.lottery_online_amount,
+      lottery_paid_out_amount: totals.lottery_paid_out_amount,
+      lottery_amount_due: totals.lottery_amount_due,
       lottery_total_sales: totals.lottery_total_sales,
       lottery_total_payouts: totals.lottery_total_payouts,
       lottery_net: totals.lottery_net,
@@ -372,16 +395,19 @@ export async function POST(request: NextRequest) {
           inclusive_count: line.inclusive_count,
           tickets_sold_override: line.tickets_sold_override,
           manual_override_reason: line.manual_override_reason ?? "",
-          payouts: line.payouts,
+          payouts: line.legacy_payouts,
           override_reason: line.manual_override_reason
         });
 
         return {
           id: line.id,
           closing_day_id: closingId,
+          store_id: parsed.store_id,
           lottery_master_entry_id: line.lottery_master_entry_id,
+          lottery_number_snapshot: line.display_number_snapshot,
           display_number_snapshot: line.display_number_snapshot,
           lottery_name_snapshot: line.lottery_name_snapshot,
+          amount_snapshot: line.ticket_price_snapshot,
           ticket_price_snapshot: line.ticket_price_snapshot,
           bundle_size_snapshot: line.bundle_size_snapshot,
           is_locked_snapshot: line.is_locked_snapshot,
@@ -389,7 +415,7 @@ export async function POST(request: NextRequest) {
           end_number: line.end_number,
           tickets_sold: computed.ticketsSold,
           sales_amount: computed.salesAmount,
-          payouts: computed.payouts,
+          payouts: line.legacy_payouts,
           net_amount: computed.netAmount,
           manual_override_reason: line.manual_override_reason,
           game_name: line.lottery_name_snapshot,
@@ -403,7 +429,9 @@ export async function POST(request: NextRequest) {
           override_reason: line.manual_override_reason,
           tickets_sold_computed: computed.ticketsSold,
           scratch_sales: computed.salesAmount,
-          scratch_payouts: computed.payouts
+          scratch_payouts: line.legacy_payouts,
+          created_by_app_user_id: user.id,
+          updated_by_app_user_id: user.id
         };
       })
     );

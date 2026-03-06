@@ -54,6 +54,10 @@ export interface MonthlyAnalyticsPayload {
     status: string;
     gross_collected: number;
     true_revenue: number;
+    scratch_revenue: number;
+    online_amount: number;
+    paid_out_amount: number;
+    amount_due: number;
     lottery_sales: number;
     lottery_payouts: number;
     billpay_collected: number;
@@ -195,6 +199,10 @@ export const aggregateMonthlyClosingData = (closings: Record<string, unknown>[])
   const totalLotterySales = sum(closings, "lottery_total_sales");
   const totalLotteryPayouts = sum(closings, "lottery_total_payouts");
   const totalLotteryNet = toMoney(totalLotterySales - totalLotteryPayouts);
+  const totalLotteryScratchRevenue = sum(closings, "lottery_total_scratch_revenue");
+  const totalLotteryOnline = sum(closings, "lottery_online_amount");
+  const totalLotteryPaidOut = sum(closings, "lottery_paid_out_amount");
+  const totalLotteryAmountDue = sum(closings, "lottery_amount_due");
   const totalBillpayCollected = sum(closings, "billpay_collected_total");
   const totalBillpayFeeRevenue = sum(closings, "billpay_fee_revenue");
 
@@ -216,6 +224,10 @@ export const aggregateMonthlyClosingData = (closings: Record<string, unknown>[])
     total_card_month: totalCard,
     total_ebt_month: totalEbt,
     total_other_payments_month: totalOther,
+    total_lottery_scratch_revenue_month: totalLotteryScratchRevenue,
+    total_lottery_online_amount_month: totalLotteryOnline,
+    total_lottery_paid_out_month: totalLotteryPaidOut,
+    total_lottery_amount_due_month: totalLotteryAmountDue,
     total_lottery_sales_month: totalLotterySales,
     total_lottery_payouts_month: totalLotteryPayouts,
     total_lottery_net_month: totalLotteryNet,
@@ -282,6 +294,8 @@ export const aggregateMonthlyLotteryData = ({
   let totalScratchSales = 0;
   let totalScratchPayouts = 0;
   let totalScratchTicketsSold = 0;
+  const scratchSalesByClosing = new Map<string, number>();
+  const scratchPayoutsByClosing = new Map<string, number>();
 
   lotteryLines.forEach((line, index) => {
     const masterId =
@@ -303,6 +317,18 @@ export const aggregateMonthlyLotteryData = ({
     totalScratchSales = toMoney(totalScratchSales + scratchSales);
     totalScratchPayouts = toMoney(totalScratchPayouts + scratchPayouts);
     totalScratchTicketsSold += ticketsSold;
+
+    const closingId = String(line.closing_day_id ?? "");
+    if (closingId) {
+      scratchSalesByClosing.set(
+        closingId,
+        toMoney((scratchSalesByClosing.get(closingId) ?? 0) + scratchSales)
+      );
+      scratchPayoutsByClosing.set(
+        closingId,
+        toMoney((scratchPayoutsByClosing.get(closingId) ?? 0) + scratchPayouts)
+      );
+    }
 
     const existing =
       grouped.get(key) ??
@@ -354,9 +380,6 @@ export const aggregateMonthlyLotteryData = ({
     }))
     .sort((a, b) => b.total_scratch_sales - a.total_scratch_sales);
 
-  const totalDrawSales = sum(closings, "draw_sales");
-  const totalDrawPayouts = sum(closings, "draw_payouts");
-
   const byDisplayNumber = table
     .reduce((acc, row) => {
       const key = row.display_number;
@@ -378,13 +401,46 @@ export const aggregateMonthlyLotteryData = ({
     }, new Map<number, { display_number: number; total_tickets_sold: number; total_sales: number; total_payouts: number; total_net: number }>())
     .values();
 
+  let totalScratchRevenue = 0;
+  let totalOnlineAmount = 0;
+  let totalPaidOutAmount = 0;
+  let totalAmountDue = 0;
+
+  closings.forEach((closing) => {
+    const closingId = String(closing.id ?? "");
+    const scratchRevenue = Number(
+      closing.lottery_total_scratch_revenue ?? scratchSalesByClosing.get(closingId) ?? 0
+    );
+    const onlineAmount = Number(closing.lottery_online_amount ?? closing.draw_sales ?? 0);
+    const paidOutAmount = Number(
+      closing.lottery_paid_out_amount ??
+        (scratchPayoutsByClosing.get(closingId) ?? 0) + Number(closing.draw_payouts ?? 0)
+    );
+    const amountDue = Number(
+      closing.lottery_amount_due ?? scratchRevenue - paidOutAmount + onlineAmount
+    );
+
+    totalScratchRevenue = toMoney(totalScratchRevenue + scratchRevenue);
+    totalOnlineAmount = toMoney(totalOnlineAmount + onlineAmount);
+    totalPaidOutAmount = toMoney(totalPaidOutAmount + paidOutAmount);
+    totalAmountDue = toMoney(totalAmountDue + amountDue);
+  });
+
+  const totalLotterySales = sum(closings, "lottery_total_sales");
+  const totalLotteryPayouts = sum(closings, "lottery_total_payouts");
+  const totalLotteryNet = sum(closings, "lottery_net");
+
   return {
     summary: {
-      total_scratch_sales: toMoney(totalScratchSales),
-      total_draw_sales: totalDrawSales,
-      total_lottery_sales: toMoney(totalScratchSales + totalDrawSales),
-      total_lottery_payouts: toMoney(totalScratchPayouts + totalDrawPayouts),
-      total_lottery_net: toMoney(totalScratchSales + totalDrawSales - totalScratchPayouts - totalDrawPayouts),
+      total_scratch_revenue: toMoney(totalScratchRevenue || totalScratchSales),
+      total_online_amount: totalOnlineAmount,
+      total_paid_out_amount: totalPaidOutAmount,
+      total_amount_due: totalAmountDue,
+      total_scratch_sales: toMoney(totalScratchRevenue || totalScratchSales),
+      total_lottery_sales: totalLotterySales,
+      total_lottery_payouts: totalLotteryPayouts,
+      total_lottery_net: totalLotteryNet,
+      total_scratch_payouts: toMoney(totalScratchPayouts),
       total_scratch_tickets_sold: totalScratchTicketsSold
     },
     table,
@@ -491,6 +547,10 @@ export const getMonthlyAnalytics = async ({
   });
   const metrics = {
     ...aggregateMonthlyClosingData(raw.closings),
+    total_lottery_scratch_revenue_month: lottery.summary.total_scratch_revenue,
+    total_lottery_online_amount_month: lottery.summary.total_online_amount,
+    total_lottery_paid_out_month: lottery.summary.total_paid_out_amount,
+    total_lottery_amount_due_month: lottery.summary.total_amount_due,
     total_scratch_tickets_sold_month: lottery.summary.total_scratch_tickets_sold
   };
   const payments = aggregateMonthlyPaymentData(raw.closings);
@@ -500,6 +560,8 @@ export const getMonthlyAnalytics = async ({
   });
 
   const closingTicketsById = new Map<string, number>();
+  const closingScratchRevenueById = new Map<string, number>();
+  const closingLegacyPayoutById = new Map<string, number>();
   raw.lotteryLines.forEach((line) => {
     const closingId = String(line.closing_day_id);
     const current = closingTicketsById.get(closingId) ?? 0;
@@ -507,25 +569,58 @@ export const getMonthlyAnalytics = async ({
       closingId,
       current + Number(line.tickets_sold ?? line.tickets_sold_computed ?? 0)
     );
+    closingScratchRevenueById.set(
+      closingId,
+      toMoney(
+        (closingScratchRevenueById.get(closingId) ?? 0) +
+          Number(line.sales_amount ?? line.scratch_sales ?? 0)
+      )
+    );
+    closingLegacyPayoutById.set(
+      closingId,
+      toMoney(
+        (closingLegacyPayoutById.get(closingId) ?? 0) +
+          Number(line.payouts ?? line.scratch_payouts ?? 0)
+      )
+    );
   });
 
   const dailyPerformance = raw.closings
-    .map((closing) => ({
-      id: String(closing.id),
-      date: String(closing.business_date),
-      status: String(closing.status ?? "DRAFT"),
-      gross_collected: Number(closing.gross_collected ?? 0),
-      true_revenue: Number(closing.true_revenue ?? 0),
-      lottery_sales: Number(closing.lottery_total_sales ?? 0),
-      lottery_payouts: Number(closing.lottery_total_payouts ?? 0),
-      billpay_collected: Number(closing.billpay_collected_total ?? 0),
-      taxable_sales: Number(closing.taxable_sales ?? 0),
-      non_taxable_sales: Number(closing.non_taxable_sales ?? 0),
-      tax_amount: Number(closing.tax_amount ?? 0),
-      cash: Number(closing.cash_amount ?? 0),
-      card: Number(closing.card_amount ?? 0),
-      tickets_sold_total: closingTicketsById.get(String(closing.id)) ?? 0
-    }))
+    .map((closing) => {
+      const closingId = String(closing.id);
+      const scratchRevenue = Number(
+        closing.lottery_total_scratch_revenue ?? closingScratchRevenueById.get(closingId) ?? 0
+      );
+      const onlineAmount = Number(closing.lottery_online_amount ?? closing.draw_sales ?? 0);
+      const paidOutAmount = Number(
+        closing.lottery_paid_out_amount ??
+          (closingLegacyPayoutById.get(closingId) ?? 0) + Number(closing.draw_payouts ?? 0)
+      );
+      const amountDue = Number(
+        closing.lottery_amount_due ?? scratchRevenue - paidOutAmount + onlineAmount
+      );
+
+      return {
+        id: closingId,
+        date: String(closing.business_date),
+        status: String(closing.status ?? "DRAFT"),
+        gross_collected: Number(closing.gross_collected ?? 0),
+        true_revenue: Number(closing.true_revenue ?? 0),
+        scratch_revenue: scratchRevenue,
+        online_amount: onlineAmount,
+        paid_out_amount: paidOutAmount,
+        amount_due: amountDue,
+        lottery_sales: Number(closing.lottery_total_sales ?? 0),
+        lottery_payouts: Number(closing.lottery_total_payouts ?? 0),
+        billpay_collected: Number(closing.billpay_collected_total ?? 0),
+        taxable_sales: Number(closing.taxable_sales ?? 0),
+        non_taxable_sales: Number(closing.non_taxable_sales ?? 0),
+        tax_amount: Number(closing.tax_amount ?? 0),
+        cash: Number(closing.cash_amount ?? 0),
+        card: Number(closing.card_amount ?? 0),
+        tickets_sold_total: closingTicketsById.get(closingId) ?? 0
+      };
+    })
     .sort((a, b) => a.date.localeCompare(b.date));
 
   const tax = {

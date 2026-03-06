@@ -1,5 +1,9 @@
 import { LotteryMasterEntry } from "@/lib/types";
-import { computeLotteryNet, computeLotterySales, computeTicketsSold } from "@/lib/math/lottery";
+import {
+  computeLotteryNet,
+  computeScratchRevenue,
+  computeTicketsSold
+} from "@/lib/math/lottery";
 
 export interface LotteryClosingLineSnapshot {
   id: string;
@@ -54,16 +58,14 @@ export const computeSnapshotLineTotals = (line: LotteryClosingLineSnapshot) => {
     inclusiveCount: Boolean(line.inclusive_count),
     manualOverride: line.tickets_sold_override ?? null
   });
-  const salesAmount = computeLotterySales({
-    ticketsSold,
-    ticketPrice: Number(line.ticket_price_snapshot ?? 0)
-  });
+  const salesAmount = computeScratchRevenue(ticketsSold, Number(line.ticket_price_snapshot ?? 0));
   const payouts = Number(line.payouts ?? 0);
   const netAmount = computeLotteryNet({ salesAmount, payouts });
 
   return {
     ticketsSold,
     salesAmount,
+    revenue: salesAmount,
     payouts,
     netAmount
   };

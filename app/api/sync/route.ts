@@ -25,13 +25,22 @@ export async function POST(request: NextRequest) {
     }
 
     if (mutation.type === "UPSERT_CLOSING") {
+      const payload = {
+        ...mutation.payload,
+        lottery_total_scratch_revenue: Number(
+          mutation.payload.lottery_total_scratch_revenue ?? 0
+        ),
+        lottery_online_amount: Number(mutation.payload.lottery_online_amount ?? 0),
+        lottery_paid_out_amount: Number(mutation.payload.lottery_paid_out_amount ?? 0),
+        lottery_amount_due: Number(mutation.payload.lottery_amount_due ?? 0)
+      };
       const response = await fetch(new URL("/api/closings/upsert", request.url), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           cookie: request.headers.get("cookie") ?? ""
         },
-        body: JSON.stringify(mutation.payload)
+        body: JSON.stringify(payload)
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {

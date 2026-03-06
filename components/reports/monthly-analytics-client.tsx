@@ -305,18 +305,28 @@ export const MonthlyAnalyticsClient = ({
               <p className="mt-1 text-xl font-bold">{formatCurrency(data.metrics.total_true_revenue_month)}</p>
             </div>
             <div className="surface p-3">
-              <p className="text-xs uppercase text-white/70">Lottery Sales</p>
-              <p className="mt-1 text-xl font-bold">{formatCurrency(data.metrics.total_lottery_sales_month)}</p>
-            </div>
-            <div className="surface p-3">
-              <p className="text-xs uppercase text-white/70">Lottery Payouts</p>
+              <p className="text-xs uppercase text-white/70">Scratch Revenue</p>
               <p className="mt-1 text-xl font-bold">
-                {formatCurrency(data.metrics.total_lottery_payouts_month)}
+                {formatCurrency(data.metrics.total_lottery_scratch_revenue_month)}
               </p>
             </div>
             <div className="surface p-3">
-              <p className="text-xs uppercase text-white/70">Lottery Net</p>
-              <p className="mt-1 text-xl font-bold">{formatCurrency(data.metrics.total_lottery_net_month)}</p>
+              <p className="text-xs uppercase text-white/70">Online</p>
+              <p className="mt-1 text-xl font-bold">
+                {formatCurrency(data.metrics.total_lottery_online_amount_month)}
+              </p>
+            </div>
+            <div className="surface p-3">
+              <p className="text-xs uppercase text-white/70">Paid Out</p>
+              <p className="mt-1 text-xl font-bold">
+                {formatCurrency(data.metrics.total_lottery_paid_out_month)}
+              </p>
+            </div>
+            <div className="surface p-3">
+              <p className="text-xs uppercase text-white/70">Amount Due</p>
+              <p className="mt-1 text-xl font-bold">
+                {formatCurrency(data.metrics.total_lottery_amount_due_month)}
+              </p>
             </div>
             <div className="surface p-3">
               <p className="text-xs uppercase text-white/70">Billpay Collected</p>
@@ -355,8 +365,7 @@ export const MonthlyAnalyticsClient = ({
           </section>
           <p className="text-xs text-white/65">
             Gross Collected includes pass-through collections (lottery and billpay based on store
-            toggles). True Revenue reflects earned revenue after lottery payouts plus billpay fee
-            revenue.
+            toggles). Lottery Amount Due is calculated as (Scratch Revenue - Paid Out) + Online.
           </p>
 
           {isCached && (
@@ -418,9 +427,7 @@ export const MonthlyAnalyticsClient = ({
                     <th className="px-2 py-2">Lines</th>
                     <th className="px-2 py-2">Tickets</th>
                     <th className="px-2 py-2">Avg Price</th>
-                    <th className="px-2 py-2">Sales</th>
-                    <th className="px-2 py-2">Payouts</th>
-                    <th className="px-2 py-2">Net</th>
+                    <th className="px-2 py-2">Revenue</th>
                     <th className="px-2 py-2">Details</th>
                   </tr>
                 </thead>
@@ -433,8 +440,6 @@ export const MonthlyAnalyticsClient = ({
                       <td className="px-2 py-2">{row.total_tickets_sold}</td>
                       <td className="px-2 py-2">{formatCurrency(row.avg_ticket_price)}</td>
                       <td className="px-2 py-2">{formatCurrency(row.total_scratch_sales)}</td>
-                      <td className="px-2 py-2">{formatCurrency(row.total_scratch_payouts)}</td>
-                      <td className="px-2 py-2">{formatCurrency(row.total_scratch_net)}</td>
                       <td className="px-2 py-2 align-top">
                         <details>
                           <summary className="cursor-pointer text-[11px] text-white/80">
@@ -444,8 +449,7 @@ export const MonthlyAnalyticsClient = ({
                             {row.details.slice(0, 8).map((detail, idx) => (
                               <p key={`${row.lottery_name}-${idx}`} className="text-[10px] text-white/65">
                                 {detail.closing_date}: {detail.start_number}-{detail.end_number} · sold{" "}
-                                {detail.tickets_sold} · {formatCurrency(detail.scratch_sales)} · payouts{" "}
-                                {formatCurrency(detail.payouts)}
+                                {detail.tickets_sold} · {formatCurrency(detail.scratch_sales)}
                               </p>
                             ))}
                           </div>
@@ -462,9 +466,7 @@ export const MonthlyAnalyticsClient = ({
                   <tr>
                     <th className="px-2 py-1">Display #</th>
                     <th className="px-2 py-1">Tickets</th>
-                    <th className="px-2 py-1">Sales</th>
-                    <th className="px-2 py-1">Payouts</th>
-                    <th className="px-2 py-1">Net</th>
+                    <th className="px-2 py-1">Revenue</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -473,8 +475,6 @@ export const MonthlyAnalyticsClient = ({
                       <td className="px-2 py-1">{row.display_number}</td>
                       <td className="px-2 py-1">{row.total_tickets_sold}</td>
                       <td className="px-2 py-1">{formatCurrency(row.total_sales)}</td>
-                      <td className="px-2 py-1">{formatCurrency(row.total_payouts)}</td>
-                      <td className="px-2 py-1">{formatCurrency(row.total_net)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -586,8 +586,10 @@ export const MonthlyAnalyticsClient = ({
                     <th className="px-2 py-2">Status</th>
                     <th className="px-2 py-2">Gross</th>
                     <th className="px-2 py-2">True Rev</th>
-                    <th className="px-2 py-2">Lottery Sales</th>
-                    <th className="px-2 py-2">Lottery Payouts</th>
+                    <th className="px-2 py-2">Scratch Rev</th>
+                    <th className="px-2 py-2">Online</th>
+                    <th className="px-2 py-2">Paid Out</th>
+                    <th className="px-2 py-2">Amount Due</th>
                     <th className="px-2 py-2">Billpay</th>
                     <th className="px-2 py-2">Taxable</th>
                     <th className="px-2 py-2">Non-Taxable</th>
@@ -605,8 +607,10 @@ export const MonthlyAnalyticsClient = ({
                       <td className="px-2 py-2">{row.status}</td>
                       <td className="px-2 py-2">{formatCurrency(row.gross_collected)}</td>
                       <td className="px-2 py-2">{formatCurrency(row.true_revenue)}</td>
-                      <td className="px-2 py-2">{formatCurrency(row.lottery_sales)}</td>
-                      <td className="px-2 py-2">{formatCurrency(row.lottery_payouts)}</td>
+                      <td className="px-2 py-2">{formatCurrency(row.scratch_revenue)}</td>
+                      <td className="px-2 py-2">{formatCurrency(row.online_amount)}</td>
+                      <td className="px-2 py-2">{formatCurrency(row.paid_out_amount)}</td>
+                      <td className="px-2 py-2">{formatCurrency(row.amount_due)}</td>
                       <td className="px-2 py-2">{formatCurrency(row.billpay_collected)}</td>
                       <td className="px-2 py-2">{formatCurrency(row.taxable_sales)}</td>
                       <td className="px-2 py-2">{formatCurrency(row.non_taxable_sales)}</td>

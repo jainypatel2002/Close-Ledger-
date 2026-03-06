@@ -31,8 +31,6 @@ interface MonthlyReportInput {
     lottery_name: string;
     total_tickets_sold: number;
     total_scratch_sales: number;
-    total_scratch_payouts: number;
-    total_scratch_net: number;
   }>;
   dailyRows: Array<{
     date: string;
@@ -374,8 +372,8 @@ export const generateMonthlyReportPdf = async (input: MonthlyReportInput) => {
     color: rgb(0.3, 0.3, 0.3)
   });
 
-  const lotteryHeaders = ["#", "Lottery", "Tickets", "Sales", "Payouts", "Net"];
-  const lotteryHeaderX = [28, 58, 300, 390, 500, 610];
+  const lotteryHeaders = ["#", "Lottery", "Tickets", "Revenue"];
+  const lotteryHeaderX = [28, 58, 300, 430];
   lotteryHeaders.forEach((header, index) => {
     page2.drawText(header, {
       x: lotteryHeaderX[index],
@@ -391,9 +389,7 @@ export const generateMonthlyReportPdf = async (input: MonthlyReportInput) => {
     page2.drawText(String(row.display_number), { x: 28, y: lotteryY, size: 8, font });
     page2.drawText(row.lottery_name.slice(0, 26), { x: 58, y: lotteryY, size: 8, font });
     page2.drawText(String(row.total_tickets_sold), { x: 300, y: lotteryY, size: 8, font });
-    page2.drawText(money(row.total_scratch_sales), { x: 390, y: lotteryY, size: 8, font });
-    page2.drawText(money(row.total_scratch_payouts), { x: 500, y: lotteryY, size: 8, font });
-    page2.drawText(money(row.total_scratch_net), { x: 610, y: lotteryY, size: 8, font });
+    page2.drawText(money(row.total_scratch_sales), { x: 430, y: lotteryY, size: 8, font });
     lotteryY -= 11;
   });
 

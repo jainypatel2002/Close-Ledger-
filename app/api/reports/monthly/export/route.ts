@@ -55,9 +55,7 @@ export async function GET(request: NextRequest) {
         "total_ticket_lines_count",
         "total_tickets_sold",
         "avg_ticket_price",
-        "total_scratch_sales",
-        "total_scratch_payouts",
-        "total_scratch_net"
+        "total_scratch_revenue"
       ];
       const rows = monthly.lottery.table.map((row) => [
         row.display_number,
@@ -65,9 +63,7 @@ export async function GET(request: NextRequest) {
         row.total_ticket_lines_count,
         row.total_tickets_sold,
         row.avg_ticket_price,
-        row.total_scratch_sales,
-        row.total_scratch_payouts,
-        row.total_scratch_net
+        row.total_scratch_sales
       ]);
       csv = toCsv(headers, rows);
       filename = `lottery_breakdown_${storeId}_${year}-${String(month).padStart(2, "0")}.csv`;
@@ -92,8 +88,10 @@ export async function GET(request: NextRequest) {
         "status",
         "gross_collected",
         "true_revenue",
-        "lottery_sales",
-        "lottery_payouts",
+        "scratch_revenue",
+        "online_amount",
+        "paid_out_amount",
+        "amount_due",
         "billpay_collected",
         "taxable_sales",
         "non_taxable_sales",
@@ -107,8 +105,10 @@ export async function GET(request: NextRequest) {
         row.status,
         row.gross_collected,
         row.true_revenue,
-        row.lottery_sales,
-        row.lottery_payouts,
+        row.scratch_revenue,
+        row.online_amount,
+        row.paid_out_amount,
+        row.amount_due,
         row.billpay_collected,
         row.taxable_sales,
         row.non_taxable_sales,

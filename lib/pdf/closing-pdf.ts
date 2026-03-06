@@ -26,6 +26,10 @@ interface PdfInput {
     tax_amount: number;
     draw_sales: number;
     draw_payouts: number;
+    lottery_total_scratch_revenue: number;
+    lottery_online_amount: number;
+    lottery_paid_out_amount: number;
+    lottery_amount_due: number;
     lottery_total_sales: number;
     lottery_total_payouts: number;
     lottery_net: number;
@@ -214,6 +218,10 @@ export const generateClosingPdf = async (input: PdfInput) => {
     ["Taxable Sales", money(input.closing.taxable_sales)],
     ["Non-taxable Sales", money(input.closing.non_taxable_sales)],
     ["Tax Amount", money(input.closing.tax_amount)],
+    ["Scratch Revenue", money(input.closing.lottery_total_scratch_revenue)],
+    ["Lottery Online", money(input.closing.lottery_online_amount)],
+    ["Lottery Paid Out", money(input.closing.lottery_paid_out_amount)],
+    ["Lottery Amount Due", money(input.closing.lottery_amount_due)],
     ["Lottery Sales", money(input.closing.lottery_total_sales)],
     ["Lottery Payouts", money(input.closing.lottery_total_payouts)],
     ["Lottery Net", money(input.closing.lottery_net)],
@@ -249,34 +257,97 @@ export const generateClosingPdf = async (input: PdfInput) => {
     paymentCursor -= 14;
   });
 
-  page.drawText("Lottery Scratch Lines", {
+  page.drawText("Lottery Scratch Section", {
     x: 32,
     y: 928,
     size: 13,
     font: bold,
     color: rgb(0.1, 0.1, 0.1)
   });
-  let scratchCursor = 910;
-  input.lotteryLines.slice(0, 12).forEach((line) => {
-    const displayNumber = Number(line.display_number_snapshot ?? 0);
+  const scratchHeaders = ["#", "Name", "Amount", "Start", "End", "Sold", "Revenue"];
+  const scratchHeaderX = [32, 60, 190, 250, 310, 370, 430];
+  scratchHeaders.forEach((header, index) => {
+    page.drawText(header, {
+      x: scratchHeaderX[index],
+      y: 912,
+      size: 8,
+      font: bold,
+      color: rgb(0.14, 0.14, 0.14)
+    });
+  });
+
+  let scratchCursor = 898;
+  input.lotteryLines.slice(0, 14).forEach((line, index) => {
+    const displayNumber = Number(line.display_number_snapshot ?? index + 1);
     const name = String(line.lottery_name_snapshot ?? line.game_name ?? "Lottery");
     const price = Number(line.ticket_price_snapshot ?? line.ticket_price ?? 0);
     const start = Number(line.start_number ?? line.start_ticket_number ?? 0);
     const end = Number(line.end_number ?? line.end_ticket_number ?? 0);
     const sold = Number(line.tickets_sold ?? line.tickets_sold_computed ?? 0);
-    const sales = Number(line.sales_amount ?? line.scratch_sales ?? 0);
-    const payouts = Number(line.payouts ?? line.scratch_payouts ?? 0);
-    const net = Number(line.net_amount ?? sales - payouts);
-    page.drawText(
-      `${displayNumber > 0 ? `${displayNumber}. ` : ""}${name} · $${price.toFixed(2)} · ${start}-${end} · sold ${sold} · sales ${money(sales)} · payouts ${money(payouts)} · net ${money(net)}`,
-      {
-        x: 32,
-        y: scratchCursor,
-        size: 9,
-        font
-      }
-    );
-    scratchCursor -= 12;
+    const sales = Number(line.sales_amount ?? line.scratch_sales ?? sold * price);
+    page.drawText(String(displayNumber), { x: 32, y: scratchCursor, size: 8, font });
+    page.drawText(name.slice(0, 22), { x: 60, y: scratchCursor, size: 8, font });
+    page.drawText(money(price), { x: 190, y: scratchCursor, size: 8, font });
+    page.drawText(String(start), { x: 250, y: scratchCursor, size: 8, font });
+    page.drawText(String(end), { x: 310, y: scratchCursor, size: 8, font });
+    page.drawText(String(sold), { x: 370, y: scratchCursor, size: 8, font });
+    page.drawText(money(sales), { x: 430, y: scratchCursor, size: 8, font });
+    scratchCursor -= 11;
+  });
+
+  const totalScratchRevenueFallback = input.lotteryLines.reduce(
+    (sum, line) =>
+      sum +
+      Number(
+        line.sales_amount ??
+          line.scratch_sales ??
+          Number(line.tickets_sold ?? line.tickets_sold_computed ?? 0) *
+            Number(line.ticket_price_snapshot ?? line.ticket_price ?? 0)
+      ),
+    0
+  );
+  const paidOutFallback = input.lotteryLines.reduce(
+    (sum, line) => sum + Number(line.payouts ?? line.scratch_payouts ?? 0),
+    0
+  );
+  const totalScratchRevenue =
+    Number.isFinite(input.closing.lottery_total_scratch_revenue) &&
+    input.closing.lottery_total_scratch_revenue > 0
+      ? Number(input.closing.lottery_total_scratch_revenue)
+      : totalScratchRevenueFallback;
+  const onlineAmount = Number(input.closing.lottery_online_amount ?? input.closing.draw_sales ?? 0);
+  const paidOutAmount =
+    Number.isFinite(input.closing.lottery_paid_out_amount) &&
+    input.closing.lottery_paid_out_amount > 0
+      ? Number(input.closing.lottery_paid_out_amount)
+      : paidOutFallback + Number(input.closing.draw_payouts ?? 0);
+  const amountDue = Number(
+    input.closing.lottery_amount_due ?? totalScratchRevenue - paidOutAmount + onlineAmount
+  );
+
+  scratchCursor -= 8;
+  const scratchSummaryRows: Array<[string, number]> = [
+    ["Total Scratch Revenue", totalScratchRevenue],
+    ["Online", onlineAmount],
+    ["Paid Out", paidOutAmount],
+    ["Amount Due", amountDue]
+  ];
+  scratchSummaryRows.forEach(([label, value]) => {
+    page.drawText(label, {
+      x: 32,
+      y: scratchCursor,
+      size: 8,
+      font,
+      color: rgb(0.2, 0.2, 0.2)
+    });
+    page.drawText(money(value), {
+      x: 190,
+      y: scratchCursor,
+      size: 8,
+      font: bold,
+      color: rgb(0.2, 0.2, 0.2)
+    });
+    scratchCursor -= 10;
   });
 
   page.drawText("Billpay Lines", {

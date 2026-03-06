@@ -2,7 +2,16 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { aggregateMonthlyLotteryData } from "@/lib/analytics/monthly";
 import { createEmptyClosing } from "@/lib/closing/defaults";
 import { saveClosingLocallyAndQueue } from "@/lib/closing/save";
-import { computeLotteryNet, computeLotterySales, computeTicketsSold, validateLotteryRange } from "@/lib/math/lottery";
+import {
+  computeLotteryAmountDue,
+  computeLotteryNet,
+  computeLotterySales,
+  computeScratchRevenue,
+  computeScratchSold,
+  computeTicketsSold,
+  computeTotalScratchRevenue,
+  validateLotteryRange
+} from "@/lib/math/lottery";
 import { buildLotteryLinesFromMasterEntries } from "@/lib/lottery/snapshots";
 import { offlineDb } from "@/lib/offline/db";
 import { generateClosingPdf } from "@/lib/pdf/closing-pdf";
@@ -85,28 +94,32 @@ describe("lottery master + monthly integration", () => {
     expect(newSnapshot.lottery_name_snapshot).toBe("Cashword Plus");
   });
 
-  it("computes tickets sold, sales, net and validates ranges", () => {
+  it("computes sold/revenue/amount-due using the new downward ticket math", () => {
+    expect(computeScratchSold(100, 98)).toBe(2);
+    expect(computeScratchSold(39, 38)).toBe(1);
+    expect(computeScratchSold(95, 87)).toBe(8);
+
     const sold = computeTicketsSold({
-      startNumber: 100,
-      endNumber: 120,
+      startNumber: 95,
+      endNumber: 87,
       inclusiveCount: false
     });
-    const inclusiveSold = computeTicketsSold({
-      startNumber: 100,
-      endNumber: 120,
-      inclusiveCount: true
-    });
-    const sales = computeLotterySales({ ticketsSold: sold, ticketPrice: 2 });
-    const net = computeLotteryNet({ salesAmount: sales, payouts: 10 });
+    const sales = computeLotterySales({ ticketsSold: sold, ticketPrice: 10 });
+    const revenue = computeScratchRevenue(sold, 10);
+    const totalScratchRevenue = computeTotalScratchRevenue([{ revenue }]);
+    const amountDue = computeLotteryAmountDue(totalScratchRevenue, 100, 50);
+    const net = computeLotteryNet({ salesAmount: sales, payouts: 100 });
 
-    expect(sold).toBe(20);
-    expect(inclusiveSold).toBe(21);
-    expect(sales).toBe(40);
-    expect(net).toBe(30);
+    expect(sold).toBe(8);
+    expect(sales).toBe(80);
+    expect(revenue).toBe(80);
+    expect(totalScratchRevenue).toBe(80);
+    expect(amountDue).toBe(30);
+    expect(net).toBe(-20);
 
     const valid = validateLotteryRange({
-      startNumber: 1,
-      endNumber: 120,
+      startNumber: 120,
+      endNumber: 1,
       inclusiveCount: false,
       bundleSize: 100
     });
@@ -114,7 +127,7 @@ describe("lottery master + monthly integration", () => {
     expect(valid.warning).toContain("bundle size");
 
     const invalid = validateLotteryRange({
-      startNumber: 120,
+      startNumber: 90,
       endNumber: 100,
       inclusiveCount: false,
       bundleSize: 100
@@ -127,6 +140,13 @@ describe("lottery master + monthly integration", () => {
       {
         id: "c1",
         business_date: "2026-02-01",
+        lottery_total_sales: 40,
+        lottery_total_payouts: 5,
+        lottery_net: 35,
+        lottery_total_scratch_revenue: 40,
+        lottery_online_amount: 0,
+        lottery_paid_out_amount: 5,
+        lottery_amount_due: 35,
         draw_sales: 0,
         draw_payouts: 0
       }
@@ -140,7 +160,7 @@ describe("lottery master + monthly integration", () => {
         lottery_name_snapshot: "Cashword",
         ticket_price_snapshot: 2,
         start_number: 100,
-        end_number: 120,
+        end_number: 80,
         tickets_sold: 20,
         sales_amount: 40,
         payouts: 5,
@@ -159,6 +179,44 @@ describe("lottery master + monthly integration", () => {
     expect(aggregation.summary.total_scratch_sales).toBe(40);
     expect(aggregation.summary.total_lottery_net).toBe(35);
     expect(aggregation.table[0].lottery_name).toBe("Cashword Plus");
+  });
+
+  it("legacy closings without new summary columns still aggregate safely", () => {
+    const closings = [
+      {
+        id: "legacy-1",
+        business_date: "2026-01-10",
+        draw_sales: 10,
+        draw_payouts: 2,
+        lottery_total_sales: 50,
+        lottery_total_payouts: 7,
+        lottery_net: 43
+      }
+    ];
+    const lines = [
+      {
+        id: "legacy-line-1",
+        closing_day_id: "legacy-1",
+        display_number_snapshot: 2,
+        lottery_name_snapshot: "Lucky Sevens",
+        ticket_price_snapshot: 5,
+        start_number: 40,
+        end_number: 30,
+        tickets_sold: 10,
+        sales_amount: 40,
+        payouts: 5
+      }
+    ];
+    const aggregation = aggregateMonthlyLotteryData({
+      lotteryLines: lines,
+      closings,
+      lotteryMasterEntries: []
+    });
+
+    expect(aggregation.summary.total_scratch_revenue).toBe(40);
+    expect(aggregation.summary.total_online_amount).toBe(10);
+    expect(aggregation.summary.total_paid_out_amount).toBe(7);
+    expect(aggregation.summary.total_amount_due).toBe(43);
   });
 
   it("daily closing PDF supports snapshot lottery rows", async () => {
@@ -185,6 +243,10 @@ describe("lottery master + monthly integration", () => {
         tax_amount: 4.38,
         draw_sales: 0,
         draw_payouts: 0,
+        lottery_total_scratch_revenue: 30,
+        lottery_online_amount: 0,
+        lottery_paid_out_amount: 5,
+        lottery_amount_due: 25,
         lottery_total_sales: 30,
         lottery_total_payouts: 5,
         lottery_net: 25,
@@ -203,7 +265,7 @@ describe("lottery master + monthly integration", () => {
           lottery_name_snapshot: "Cashword",
           ticket_price_snapshot: 2,
           start_number: 100,
-          end_number: 120,
+          end_number: 80,
           tickets_sold: 20,
           sales_amount: 40,
           payouts: 5,
@@ -225,8 +287,8 @@ describe("lottery master + monthly integration", () => {
 
   it("offline-created closings keep lottery snapshots", async () => {
     const draft = createEmptyClosing(storeFixture, masterFixture);
-    draft.lottery_lines[0].start_number = 10;
-    draft.lottery_lines[0].end_number = 20;
+    draft.lottery_lines[0].start_number = 20;
+    draft.lottery_lines[0].end_number = 10;
     await saveClosingLocallyAndQueue({ values: draft, role: "STAFF" });
 
     const stored = await offlineDb.closings.get(draft.id);
@@ -266,9 +328,7 @@ describe("lottery master + monthly integration", () => {
           display_number: 1,
           lottery_name: "Cashword",
           total_tickets_sold: 200,
-          total_scratch_sales: 400,
-          total_scratch_payouts: 100,
-          total_scratch_net: 300
+          total_scratch_sales: 400
         }
       ],
       dailyRows: [

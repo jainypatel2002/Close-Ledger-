@@ -250,7 +250,7 @@ export const LotteryMasterManager = ({ storeId, initialEntries }: LotteryMasterM
         </h3>
         <p className="mt-1 text-xs text-white/65">
           Locked entries are read-only in daily closing identity/price fields. Staff only enters
-          start/end numbers and payouts.
+          start/end numbers plus summary-level Online/Paid Out values.
         </p>
         <div className="mt-4 grid gap-2 sm:grid-cols-3">
           <div>

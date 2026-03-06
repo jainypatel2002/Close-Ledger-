@@ -80,9 +80,12 @@ export interface ClosingCategoryLine {
 export interface LotteryScratchLine {
   id: string;
   closing_day_id: string;
+  store_id: string;
   lottery_master_entry_id: string | null;
+  lottery_number_snapshot: number;
   display_number_snapshot: number;
   lottery_name_snapshot: string;
+  amount_snapshot: number;
   ticket_price_snapshot: number;
   bundle_size_snapshot: number;
   is_locked_snapshot: boolean;
@@ -105,6 +108,8 @@ export interface LotteryScratchLine {
   tickets_sold_computed: number;
   scratch_sales: number;
   scratch_payouts: number;
+  created_by_app_user_id: string | null;
+  updated_by_app_user_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -141,6 +146,10 @@ export interface ClosingDay {
   non_taxable_sales: number;
   draw_sales: number;
   draw_payouts: number;
+  lottery_total_scratch_revenue: number;
+  lottery_online_amount: number;
+  lottery_paid_out_amount: number;
+  lottery_amount_due: number;
   lottery_total_sales: number;
   lottery_total_payouts: number;
   lottery_net: number;
@@ -202,6 +211,10 @@ export interface ClosingInput {
   tax_amount?: number;
   tax_override_enabled: boolean;
   tax_amount_manual?: number | null;
+  lottery_total_scratch_revenue: number;
+  lottery_online_amount: number;
+  lottery_paid_out_amount: number;
+  lottery_amount_due: number;
   draw_sales: number;
   draw_payouts: number;
   cash_amount: number;
@@ -220,8 +233,10 @@ export interface ClosingInput {
   lottery_lines: Array<{
     id: string;
     lottery_master_entry_id?: string | null;
+    lottery_number_snapshot?: number;
     display_number_snapshot?: number;
     lottery_name_snapshot?: string;
+    amount_snapshot?: number;
     ticket_price_snapshot?: number;
     bundle_size_snapshot?: number;
     is_locked_snapshot?: boolean;
@@ -254,6 +269,10 @@ export interface ClosingComputedTotals {
   product_sales_total: number;
   taxable_sales: number;
   non_taxable_sales: number;
+  lottery_total_scratch_revenue: number;
+  lottery_online_amount: number;
+  lottery_paid_out_amount: number;
+  lottery_amount_due: number;
   lottery_total_sales: number;
   lottery_total_payouts: number;
   lottery_net: number;
