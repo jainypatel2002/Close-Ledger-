@@ -1,0 +1,41 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  min-height: 100vh;
+  background: radial-gradient(circle at top, #2a0a12 0%, #0b0b0d 42%, #050507 100%);
+  color: #f8f9fa;
+}
+
+.standard body,
+.light body {
+  background: linear-gradient(180deg, #f6f7fb 0%, #eceef4 100%);
+  color: #121316;
+}
+
+.surface {
+  @apply rounded-2xl border border-white/10 bg-black/30 backdrop-blur-md;
+}
+
+.field {
+  @apply w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-white outline-none transition focus:border-brand-crimson/60 focus:ring-2 focus:ring-brand-crimson/40;
+}
+
+.field-label {
+  @apply mb-1 block text-xs font-medium uppercase tracking-wide text-white/70;
+}
+
+.standard .field,
+.light .field {
+  @apply border-slate-300 bg-white text-slate-900 focus:border-red-500 focus:ring-red-500/30;
+}
+
+.standard .field-label,
+.light .field-label {
+  @apply text-slate-700;
+}
