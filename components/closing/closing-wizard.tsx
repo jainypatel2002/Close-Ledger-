@@ -28,6 +28,7 @@ import {
   LotteryMasterFormState,
   parseLotteryMasterFormState
 } from "@/lib/lottery/master-form";
+import { findUsableLotteryConflicts, isLotteryUsable } from "@/lib/lottery/master-rules";
 
 interface ClosingWizardProps {
   store: Store;
@@ -267,12 +268,13 @@ export const ClosingWizard = ({
         .where("store_id")
         .equals(store.id)
         .toArray();
-      if (!active || cachedEntries.length === 0) {
+      const pendingLocalEntries = cachedEntries.filter((entry) => entry._dirty);
+      if (!active || pendingLocalEntries.length === 0) {
         return;
       }
       setLotteryCatalog((current) => {
         let merged = current;
-        cachedEntries.forEach((entry) => {
+        pendingLocalEntries.forEach((entry) => {
           merged = upsertLotteryMasterEntry(merged, entry);
         });
         return merged;
@@ -288,7 +290,7 @@ export const ClosingWizard = ({
     if (!autoPrepareNextEntry || lotteryLineCount > 0) {
       return;
     }
-    const activeEntries = sortedLotteryCatalog.filter((entry) => entry.is_active);
+    const activeEntries = sortedLotteryCatalog.filter((entry) => isLotteryUsable(entry));
     if (activeEntries.length === 0) {
       return;
     }
@@ -363,14 +365,20 @@ export const ClosingWizard = ({
       return;
     }
     const values = parsed.data;
-    const conflict = sortedLotteryCatalog.find(
-      (entry) =>
-        entry.display_number === values.display_number &&
-        (lotteryConfigForm.id ? entry.id !== lotteryConfigForm.id : true)
-    );
-    if (conflict) {
-      toast.error("Lottery number already exists for this store.");
-      return;
+    if (values.is_active) {
+      const { numberConflict, nameConflict } = findUsableLotteryConflicts(sortedLotteryCatalog, {
+        displayNumber: values.display_number,
+        name: values.name,
+        excludeId: lotteryConfigForm.id
+      });
+      if (numberConflict) {
+        toast.error("Lottery number already exists among active lotteries for this store.");
+        return;
+      }
+      if (nameConflict) {
+        toast.error("Lottery name already exists among active lotteries for this store.");
+        return;
+      }
     }
 
     const isEditing = Boolean(lotteryConfigForm.id);
@@ -386,6 +394,9 @@ export const ClosingWizard = ({
       ticket_price: values.ticket_price,
       default_bundle_size: values.default_bundle_size,
       is_active: values.is_active,
+      is_archived: false,
+      archived_at: null,
+      archived_by_app_user_id: null,
       is_locked: values.is_locked,
       notes: values.notes,
       created_by_app_user_id: existingEntry?.created_by_app_user_id ?? null,

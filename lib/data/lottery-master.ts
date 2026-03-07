@@ -4,10 +4,12 @@ import { LotteryMasterEntry } from "@/lib/types";
 
 export const getLotteryMasterEntriesForStore = async ({
   storeId,
-  onlyActive = false
+  onlyActive = false,
+  includeArchived = false
 }: {
   storeId: string;
   onlyActive?: boolean;
+  includeArchived?: boolean;
 }): Promise<LotteryMasterEntry[]> => {
   const supabase = await createSupabaseServerClient();
   let query = supabase
@@ -19,6 +21,9 @@ export const getLotteryMasterEntriesForStore = async ({
 
   if (onlyActive) {
     query = query.eq("is_active", true);
+    query = query.eq("is_archived", false);
+  } else if (!includeArchived) {
+    query = query.eq("is_archived", false);
   }
 
   const { data, error } = await query;

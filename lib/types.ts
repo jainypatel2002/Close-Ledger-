@@ -60,6 +60,9 @@ export interface LotteryMasterEntry {
   ticket_price: number;
   default_bundle_size: number;
   is_active: boolean;
+  is_archived?: boolean;
+  archived_at?: string | null;
+  archived_by_app_user_id?: string | null;
   is_locked: boolean;
   notes: string | null;
   created_by_app_user_id: string | null;

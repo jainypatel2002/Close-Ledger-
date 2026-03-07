@@ -103,6 +103,31 @@ export const OfflineHydrator = ({
         });
       }
 
+      const storesWithLotteryPayload = new Set<string>(stores.map((store) => store.id));
+      lotteryMasterEntries.forEach((entry) => {
+        storesWithLotteryPayload.add(entry.store_id);
+      });
+
+      for (const scopedStoreId of storesWithLotteryPayload) {
+        const serverIds = new Set(
+          lotteryMasterEntries
+            .filter((entry) => entry.store_id === scopedStoreId)
+            .map((entry) => entry.id)
+        );
+        const cachedEntries = await offlineDb.lotteryMasterEntries
+          .where("store_id")
+          .equals(scopedStoreId)
+          .toArray();
+        for (const cached of cachedEntries) {
+          if (cached._dirty) {
+            continue;
+          }
+          if (!serverIds.has(cached.id)) {
+            await offlineDb.lotteryMasterEntries.delete(cached.id);
+          }
+        }
+      }
+
       for (const entry of lotteryMasterEntries) {
         const existing = await offlineDb.lotteryMasterEntries.get(entry.id);
         if (existing?._dirty) {
@@ -110,6 +135,9 @@ export const OfflineHydrator = ({
         }
         await offlineDb.lotteryMasterEntries.put({
           ...entry,
+          is_archived: Boolean(entry.is_archived),
+          archived_at: entry.archived_at ?? null,
+          archived_by_app_user_id: entry.archived_by_app_user_id ?? null,
           _dirty: false
         });
       }

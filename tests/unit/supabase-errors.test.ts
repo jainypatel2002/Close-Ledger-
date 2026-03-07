@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { isSupabaseMissingTableError } from "@/lib/supabase/errors";
+import {
+  getSupabaseConstraintName,
+  isSupabaseMissingTableError,
+  isSupabaseUniqueViolation
+} from "@/lib/supabase/errors";
 
 describe("supabase error helpers", () => {
   it("detects missing-table postgrest errors by code + table name", () => {
@@ -30,5 +34,23 @@ describe("supabase error helpers", () => {
     };
 
     expect(isSupabaseMissingTableError(error, "lottery_master_entries")).toBe(false);
+  });
+
+  it("detects unique violation code", () => {
+    expect(
+      isSupabaseUniqueViolation({
+        code: "23505",
+        message: "duplicate key value violates unique constraint"
+      })
+    ).toBe(true);
+  });
+
+  it("extracts constraint names when present", () => {
+    const constraint = getSupabaseConstraintName({
+      code: "23505",
+      message:
+        'duplicate key value violates unique constraint "idx_lottery_master_store_display_active_unique"'
+    });
+    expect(constraint).toBe("idx_lottery_master_store_display_active_unique");
   });
 });

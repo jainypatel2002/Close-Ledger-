@@ -25,7 +25,7 @@ export const appendLotteryMasterEntryToDraftLines = ({
   currentLines: ClosingFormValues["lottery_lines"];
   entry: LotteryMasterEntry;
 }) => {
-  if (!entry.is_active) {
+  if (!entry.is_active || entry.is_archived) {
     return currentLines;
   }
   if (
@@ -96,7 +96,7 @@ export const appendMissingActiveLotteryEntriesToDraftLines = ({
   let lines = [...currentLines];
   let added = false;
   sortByDisplayNumber(entries)
-    .filter((entry) => entry.is_active)
+    .filter((entry) => entry.is_active && !entry.is_archived)
     .forEach((entry) => {
       const updated = appendLotteryMasterEntryToDraftLines({
         currentLines: lines,
@@ -121,7 +121,9 @@ export const buildNextClosingDraftForLotteryWorkflow = ({
 }) => {
   const nextDraft = createEmptyClosing(
     store,
-    sortByDisplayNumber(lotteryMasterEntries).filter((entry) => entry.is_active)
+    sortByDisplayNumber(lotteryMasterEntries).filter(
+      (entry) => entry.is_active && !entry.is_archived
+    )
   );
   nextDraft.business_date = businessDate;
   return nextDraft;

@@ -47,7 +47,7 @@ export const buildLotteryLinesFromMasterEntries = (
   entries: LotteryMasterEntry[]
 ): LotteryClosingLineSnapshot[] =>
   [...entries]
-    .filter((entry) => entry.is_active)
+    .filter((entry) => entry.is_active && !entry.is_archived)
     .sort((a, b) => a.display_number - b.display_number)
     .map((entry) => buildLotteryLineFromMasterEntry(entry));
 

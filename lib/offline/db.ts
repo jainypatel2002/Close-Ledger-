@@ -60,6 +60,14 @@ export class NightlyClosingDexie extends Dexie {
       documents: "id,closing_day_id,store_id,created_at,_dirty",
       mutations: "id,type,status,store_id,entity_id,created_at,updated_at"
     });
+    this.version(3).stores({
+      stores: "id,updated_at,_dirty",
+      closings: "id,store_id,business_date,status,updated_at,_dirty",
+      lotteryMasterEntries: "id,store_id,display_number,is_active,is_archived,updated_at,_dirty",
+      monthlyAnalyticsCache: "id,store_id,year,month,range_months,updated_at",
+      documents: "id,closing_day_id,store_id,created_at,_dirty",
+      mutations: "id,type,status,store_id,entity_id,created_at,updated_at"
+    });
   }
 }
 

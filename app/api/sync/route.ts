@@ -3,6 +3,33 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { getCurrentUser, getMembershipForStore } from "@/lib/server/rbac";
 import { storeProfileSchema } from "@/lib/validation/closing";
 import { lotteryMasterEntrySchema } from "@/lib/validation/lottery-master";
+import {
+  findUsableLotteryConflicts,
+  isLotteryUsable,
+  LotteryIdentityLike
+} from "@/lib/lottery/master-rules";
+import {
+  getSupabaseConstraintName,
+  isSupabaseUniqueViolation
+} from "@/lib/supabase/errors";
+
+const DUPLICATE_DISPLAY_CONSTRAINT = "idx_lottery_master_store_display_active_unique";
+const DUPLICATE_NAME_CONSTRAINT = "idx_lottery_master_store_name_active_unique";
+
+const resolveLotteryConflictError = (error: unknown) => {
+  if (!isSupabaseUniqueViolation(error)) {
+    return null;
+  }
+
+  const constraint = getSupabaseConstraintName(error);
+  if (constraint === DUPLICATE_DISPLAY_CONSTRAINT) {
+    return "Lottery number already exists among active lotteries for this store.";
+  }
+  if (constraint === DUPLICATE_NAME_CONSTRAINT) {
+    return "Lottery name already exists among active lotteries for this store.";
+  }
+  return "An active lottery with the same identity already exists.";
+};
 
 export async function POST(request: NextRequest) {
   try {
@@ -176,21 +203,67 @@ export async function POST(request: NextRequest) {
         ...mutation.payload,
         store_id: storeId
       });
+      const normalizedName = payload.name.trim();
+      if (!normalizedName) {
+        return NextResponse.json({ error: "Lottery name is required." }, { status: 400 });
+      }
       const supabase = await createSupabaseServerClient();
+      if (payload.is_active) {
+        const activeQuery = supabase
+          .from("lottery_master_entries")
+          .select("id,display_number,name,is_active,is_archived")
+          .eq("store_id", payload.store_id)
+          .eq("is_active", true)
+          .eq("is_archived", false);
+        const { data: activeEntries, error: activeEntriesError } =
+          payload.id
+            ? await activeQuery.neq("id", payload.id)
+            : await activeQuery;
+        if (activeEntriesError) {
+          throw activeEntriesError;
+        }
+        const { numberConflict, nameConflict } = findUsableLotteryConflicts(
+          ((activeEntries ?? []) as LotteryIdentityLike[]).filter((entry) => isLotteryUsable(entry)),
+          {
+            displayNumber: payload.display_number,
+            name: normalizedName,
+            excludeId: payload.id
+          }
+        );
+        if (numberConflict) {
+          return NextResponse.json(
+            { error: "Lottery number already exists among active lotteries for this store." },
+            { status: 409 }
+          );
+        }
+        if (nameConflict) {
+          return NextResponse.json(
+            { error: "Lottery name already exists among active lotteries for this store." },
+            { status: 409 }
+          );
+        }
+      }
       const { error } = await supabase.from("lottery_master_entries").upsert({
         id: payload.id,
         store_id: payload.store_id,
         display_number: payload.display_number,
-        name: payload.name,
+        name: normalizedName,
         ticket_price: payload.ticket_price,
         default_bundle_size: payload.default_bundle_size,
         is_active: payload.is_active,
+        is_archived: false,
+        archived_at: null,
+        archived_by_app_user_id: null,
         is_locked: payload.is_locked,
         notes: payload.notes ?? null,
         created_by_app_user_id: user.id,
         updated_by_app_user_id: user.id
       });
       if (error) {
+        const friendlyConflict = resolveLotteryConflictError(error);
+        if (friendlyConflict) {
+          return NextResponse.json({ error: friendlyConflict }, { status: 409 });
+        }
         throw error;
       }
       return NextResponse.json({ ok: true });
@@ -207,13 +280,39 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: "Admin permission required." }, { status: 403 });
       }
       const supabase = await createSupabaseServerClient();
-      const { error } = await supabase
-        .from("lottery_master_entries")
-        .delete()
-        .eq("id", entryId)
-        .eq("store_id", storeId);
-      if (error) {
-        throw error;
+      const { count: referencesCount, error: referencesError } = await supabase
+        .from("lottery_scratch_lines")
+        .select("id", { count: "exact", head: true })
+        .eq("store_id", storeId)
+        .eq("lottery_master_entry_id", entryId);
+      if (referencesError) {
+        throw referencesError;
+      }
+
+      if ((referencesCount ?? 0) > 0) {
+        const { error } = await supabase
+          .from("lottery_master_entries")
+          .update({
+            is_archived: true,
+            is_active: false,
+            archived_at: new Date().toISOString(),
+            archived_by_app_user_id: user.id,
+            updated_by_app_user_id: user.id
+          })
+          .eq("id", entryId)
+          .eq("store_id", storeId);
+        if (error) {
+          throw error;
+        }
+      } else {
+        const { error } = await supabase
+          .from("lottery_master_entries")
+          .delete()
+          .eq("id", entryId)
+          .eq("store_id", storeId);
+        if (error) {
+          throw error;
+        }
       }
       return NextResponse.json({ ok: true });
     }

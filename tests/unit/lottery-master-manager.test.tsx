@@ -10,6 +10,13 @@ const {
   toastInfoMock,
   lotteryPutMock,
   lotteryDeleteMock,
+  lotteryWhereMock,
+  lotteryEqualsMock,
+  lotteryToArrayMock,
+  mutationWhereMock,
+  mutationEqualsMock,
+  mutationToArrayMock,
+  mutationDeleteMock,
   enqueueMutationMock
 } = vi.hoisted(() => ({
   toastErrorMock: vi.fn(),
@@ -17,6 +24,13 @@ const {
   toastInfoMock: vi.fn(),
   lotteryPutMock: vi.fn(),
   lotteryDeleteMock: vi.fn(),
+  lotteryWhereMock: vi.fn(),
+  lotteryEqualsMock: vi.fn(),
+  lotteryToArrayMock: vi.fn(),
+  mutationWhereMock: vi.fn(),
+  mutationEqualsMock: vi.fn(),
+  mutationToArrayMock: vi.fn(),
+  mutationDeleteMock: vi.fn(),
   enqueueMutationMock: vi.fn()
 }));
 
@@ -32,7 +46,12 @@ vi.mock("@/lib/offline/db", () => ({
   offlineDb: {
     lotteryMasterEntries: {
       put: lotteryPutMock,
-      delete: lotteryDeleteMock
+      delete: lotteryDeleteMock,
+      where: lotteryWhereMock
+    },
+    mutations: {
+      where: mutationWhereMock,
+      delete: mutationDeleteMock
     }
   }
 }));
@@ -61,6 +80,12 @@ const lockedEntryFixture: LotteryMasterEntry = {
 describe("LotteryMasterManager", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    lotteryToArrayMock.mockResolvedValue([]);
+    lotteryEqualsMock.mockReturnValue({ toArray: lotteryToArrayMock });
+    lotteryWhereMock.mockReturnValue({ equals: lotteryEqualsMock });
+    mutationToArrayMock.mockResolvedValue([]);
+    mutationEqualsMock.mockReturnValue({ toArray: mutationToArrayMock });
+    mutationWhereMock.mockReturnValue({ equals: mutationEqualsMock });
   });
 
   afterEach(() => {
@@ -150,5 +175,39 @@ describe("LotteryMasterManager", () => {
     expect(amountInput.value).toBe("");
     await user.type(amountInput, "50");
     expect(amountInput.value).toBe("50");
+  });
+
+  it("runs clean duplicate maintenance and updates rows immediately", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [{ ...lockedEntryFixture, is_archived: true, is_active: false }],
+        summary: {
+          action: "clean_duplicates",
+          scanned_count: 2,
+          duplicate_groups: 1,
+          invalid_rows: 0,
+          archived_count: 1,
+          deleted_count: 0
+        }
+      })
+    });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LotteryMasterManager storeId={storeId} initialEntries={[lockedEntryFixture]} />);
+
+    await user.click(screen.getByRole("button", { name: "Clean Duplicate Lotteries" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/lottery-master/maintenance");
+    expect(init.method).toBe("POST");
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Archived:\s*1/i)).toBeInTheDocument();
+    });
   });
 });

@@ -16,7 +16,10 @@ import { buildLotteryLinesFromMasterEntries } from "@/lib/lottery/snapshots";
 import { offlineDb } from "@/lib/offline/db";
 import { generateClosingPdf } from "@/lib/pdf/closing-pdf";
 import { generateMonthlyReportPdf } from "@/lib/pdf/monthly-report-pdf";
-import { canManageLotteryMasterCatalog } from "@/lib/server/lottery-master-permissions";
+import {
+  canManageLotteryMasterCatalog,
+  canRunLotteryMasterMaintenance
+} from "@/lib/server/lottery-master-permissions";
 import { LotteryMasterEntry, Store } from "@/lib/types";
 
 const storeFixture: Store = {
@@ -72,6 +75,8 @@ describe("lottery master + monthly integration", () => {
   it("ADMIN can manage lottery catalog while STAFF cannot", () => {
     expect(canManageLotteryMasterCatalog("ADMIN")).toBe(true);
     expect(canManageLotteryMasterCatalog("STAFF")).toBe(false);
+    expect(canRunLotteryMasterMaintenance("ADMIN")).toBe(true);
+    expect(canRunLotteryMasterMaintenance("STAFF")).toBe(false);
   });
 
   it("builds snapshot line items from lottery master entries", () => {

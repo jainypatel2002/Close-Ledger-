@@ -10,7 +10,8 @@ export default async function LotterySetupPage() {
   const store = context.activeStore!;
   const entries = await getLotteryMasterEntriesForStore({
     storeId: store.id,
-    onlyActive: false
+    onlyActive: false,
+    includeArchived: true
   });
 
   return (
