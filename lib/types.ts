@@ -3,6 +3,7 @@ export type Role = "ADMIN" | "STAFF";
 export type ClosingStatus = "DRAFT" | "SUBMITTED" | "FINALIZED" | "LOCKED";
 
 export type TaxMode = "AUTO" | "MANUAL";
+export type PaymentType = "cash" | "card" | "ebt" | "other";
 
 export type PermissionKey =
   | "can_view_history"
@@ -125,6 +126,20 @@ export interface BillpayLine {
   updated_at: string;
 }
 
+export interface PaymentLine {
+  id: string;
+  closing_day_id: string;
+  store_id: string;
+  payment_type: PaymentType;
+  label: string;
+  amount: number;
+  sort_order: number;
+  created_by_app_user_id: string | null;
+  updated_by_app_user_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface ClosingDay {
   id: string;
   store_id: string;
@@ -160,6 +175,7 @@ export interface ClosingDay {
   card_amount: number;
   ebt_amount: number;
   other_amount: number;
+  payments_total: number;
   cash_over_short: number;
   notes: string | null;
   include_billpay_in_gross: boolean;
@@ -221,6 +237,7 @@ export interface ClosingInput {
   card_amount: number;
   ebt_amount: number;
   other_amount: number;
+  payments_total?: number;
   notes?: string;
   include_billpay_in_gross: boolean;
   include_lottery_in_gross: boolean;
@@ -262,6 +279,13 @@ export interface ClosingInput {
     fee_revenue: number;
     txn_count: number;
   }>;
+  payment_lines: Array<{
+    id: string;
+    payment_type: PaymentType;
+    label: string;
+    amount: number;
+    sort_order: number;
+  }>;
   reopen_reason?: string;
 }
 
@@ -279,6 +303,10 @@ export interface ClosingComputedTotals {
   billpay_collected_total: number;
   billpay_fee_revenue: number;
   billpay_transactions_count: number;
+  cash_amount: number;
+  card_amount: number;
+  ebt_amount: number;
+  other_amount: number;
   gross_collected: number;
   true_revenue: number;
   tax_amount: number;

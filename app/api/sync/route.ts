@@ -25,6 +25,38 @@ export async function POST(request: NextRequest) {
     }
 
     if (mutation.type === "UPSERT_CLOSING") {
+      const paymentLines = Array.isArray(mutation.payload.payment_lines)
+        ? mutation.payload.payment_lines
+        : [
+            {
+              id: crypto.randomUUID(),
+              payment_type: "cash",
+              label: "Cash",
+              amount: Number(mutation.payload.cash_amount ?? 0),
+              sort_order: 0
+            },
+            {
+              id: crypto.randomUUID(),
+              payment_type: "card",
+              label: "Card",
+              amount: Number(mutation.payload.card_amount ?? 0),
+              sort_order: 1
+            },
+            {
+              id: crypto.randomUUID(),
+              payment_type: "ebt",
+              label: "EBT",
+              amount: Number(mutation.payload.ebt_amount ?? 0),
+              sort_order: 2
+            },
+            {
+              id: crypto.randomUUID(),
+              payment_type: "other",
+              label: "Other",
+              amount: Number(mutation.payload.other_amount ?? 0),
+              sort_order: 3
+            }
+          ];
       const payload = {
         ...mutation.payload,
         lottery_total_scratch_revenue: Number(
@@ -32,7 +64,8 @@ export async function POST(request: NextRequest) {
         ),
         lottery_online_amount: Number(mutation.payload.lottery_online_amount ?? 0),
         lottery_paid_out_amount: Number(mutation.payload.lottery_paid_out_amount ?? 0),
-        lottery_amount_due: Number(mutation.payload.lottery_amount_due ?? 0)
+        lottery_amount_due: Number(mutation.payload.lottery_amount_due ?? 0),
+        payment_lines: paymentLines
       };
       const response = await fetch(new URL("/api/closings/upsert", request.url), {
         method: "POST",

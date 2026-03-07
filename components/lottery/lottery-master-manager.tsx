@@ -7,32 +7,16 @@ import { LotteryMasterEntry } from "@/lib/types";
 import { formatCurrency } from "@/lib/utils";
 import { offlineDb } from "@/lib/offline/db";
 import { enqueueMutation } from "@/lib/offline/sync";
+import {
+  createLotteryMasterFormState,
+  LotteryMasterFormState,
+  parseLotteryMasterFormState
+} from "@/lib/lottery/master-form";
 
 interface LotteryMasterManagerProps {
   storeId: string;
   initialEntries: LotteryMasterEntry[];
 }
-
-interface FormState {
-  id?: string;
-  display_number: number;
-  name: string;
-  ticket_price: number;
-  default_bundle_size: number;
-  is_active: boolean;
-  is_locked: boolean;
-  notes: string;
-}
-
-const emptyForm: FormState = {
-  display_number: 1,
-  name: "",
-  ticket_price: 0,
-  default_bundle_size: 100,
-  is_active: true,
-  is_locked: false,
-  notes: ""
-};
 
 const sortEntries = (entries: LotteryMasterEntry[]) =>
   [...entries].sort((a, b) => a.display_number - b.display_number || a.name.localeCompare(b.name));
@@ -41,9 +25,12 @@ export const LotteryMasterManager = ({ storeId, initialEntries }: LotteryMasterM
   const [entries, setEntries] = useState<LotteryMasterEntry[]>(sortEntries(initialEntries));
   const getNextDisplayNumber = (sourceEntries: LotteryMasterEntry[]) =>
     Math.max(1, (sortEntries(sourceEntries).at(-1)?.display_number ?? 0) + 1);
-  const [form, setForm] = useState<FormState>(() => {
-    return { ...emptyForm, display_number: getNextDisplayNumber(initialEntries) };
-  });
+  const [form, setForm] = useState<LotteryMasterFormState>(() =>
+    createLotteryMasterFormState({
+      nextDisplayNumber: getNextDisplayNumber(initialEntries),
+      defaultBundleSize: 100
+    })
+  );
   const [isFormOpen, setIsFormOpen] = useState(initialEntries.length === 0);
   const [pending, startTransition] = useTransition();
 
@@ -54,7 +41,12 @@ export const LotteryMasterManager = ({ storeId, initialEntries }: LotteryMasterM
   );
 
   const resetForm = (open = false) => {
-    setForm({ ...emptyForm, display_number: getNextDisplayNumber(entries) });
+    setForm(
+      createLotteryMasterFormState({
+        nextDisplayNumber: getNextDisplayNumber(entries),
+        defaultBundleSize: 100
+      })
+    );
     setIsFormOpen(open);
   };
 
@@ -63,16 +55,13 @@ export const LotteryMasterManager = ({ storeId, initialEntries }: LotteryMasterM
   };
 
   const startEdit = (entry: LotteryMasterEntry) => {
-    setForm({
-      id: entry.id,
-      display_number: entry.display_number,
-      name: entry.name,
-      ticket_price: entry.ticket_price,
-      default_bundle_size: entry.default_bundle_size,
-      is_active: entry.is_active,
-      is_locked: entry.is_locked,
-      notes: entry.notes ?? ""
-    });
+    setForm(
+      createLotteryMasterFormState({
+        entry,
+        nextDisplayNumber: getNextDisplayNumber(entries),
+        defaultBundleSize: 100
+      })
+    );
     setIsFormOpen(true);
   };
 
@@ -87,23 +76,16 @@ export const LotteryMasterManager = ({ storeId, initialEntries }: LotteryMasterM
   };
 
   const submit = () => {
-    const trimmedName = form.name.trim();
-    if (!trimmedName) {
-      toast.error("Lottery name is required.");
+    const parsed = parseLotteryMasterFormState(form);
+    if (!parsed.ok) {
+      toast.error(parsed.error);
       return;
     }
-    if (form.ticket_price < 0) {
-      toast.error("Amount must be 0 or more.");
-      return;
-    }
-    if (form.default_bundle_size <= 0) {
-      toast.error("Bundle size must be greater than 0.");
-      return;
-    }
+    const values = parsed.data;
 
     const conflict = entries.find(
       (entry) =>
-        entry.display_number === form.display_number &&
+        entry.display_number === values.display_number &&
         (form.id ? entry.id !== form.id : true)
     );
     if (conflict) {
@@ -117,13 +99,13 @@ export const LotteryMasterManager = ({ storeId, initialEntries }: LotteryMasterM
       const payload: LotteryMasterEntry = {
         id,
         store_id: storeId,
-        display_number: form.display_number,
-        name: trimmedName,
-        ticket_price: Number(form.ticket_price),
-        default_bundle_size: Number(form.default_bundle_size),
-        is_active: Boolean(form.is_active),
-        is_locked: Boolean(form.is_locked),
-        notes: form.notes.trim() || null,
+        display_number: values.display_number,
+        name: values.name,
+        ticket_price: values.ticket_price,
+        default_bundle_size: values.default_bundle_size,
+        is_active: values.is_active,
+        is_locked: values.is_locked,
+        notes: values.notes,
         created_by_app_user_id: null,
         updated_by_app_user_id: null,
         created_at: new Date().toISOString(),
@@ -309,12 +291,13 @@ export const LotteryMasterManager = ({ storeId, initialEntries }: LotteryMasterM
               <input
                 className="field"
                 type="number"
+                aria-label="Lottery Number"
                 min={1}
                 value={form.display_number}
                 onChange={(event) =>
                   setForm((current) => ({
                     ...current,
-                    display_number: Number(event.target.value || 1)
+                    display_number: event.target.value
                   }))
                 }
               />
@@ -323,6 +306,7 @@ export const LotteryMasterManager = ({ storeId, initialEntries }: LotteryMasterM
               <label className="field-label">Lottery Name</label>
               <input
                 className="field"
+                aria-label="Lottery Name"
                 value={form.name}
                 onChange={(event) =>
                   setForm((current) => ({ ...current, name: event.target.value }))
@@ -334,13 +318,14 @@ export const LotteryMasterManager = ({ storeId, initialEntries }: LotteryMasterM
               <input
                 className="field"
                 type="number"
+                aria-label="Lottery Amount"
                 step="0.01"
                 min={0}
                 value={form.ticket_price}
                 onChange={(event) =>
                   setForm((current) => ({
                     ...current,
-                    ticket_price: Number(event.target.value || 0)
+                    ticket_price: event.target.value
                   }))
                 }
               />
@@ -350,12 +335,13 @@ export const LotteryMasterManager = ({ storeId, initialEntries }: LotteryMasterM
               <input
                 className="field"
                 type="number"
+                aria-label="Default Bundle Size"
                 min={1}
                 value={form.default_bundle_size}
                 onChange={(event) =>
                   setForm((current) => ({
                     ...current,
-                    default_bundle_size: Number(event.target.value || 100)
+                    default_bundle_size: event.target.value
                   }))
                 }
               />
@@ -385,6 +371,7 @@ export const LotteryMasterManager = ({ storeId, initialEntries }: LotteryMasterM
             <label className="field-label">Notes</label>
             <textarea
               className="field"
+              aria-label="Lottery Notes"
               rows={3}
               value={form.notes}
               onChange={(event) =>

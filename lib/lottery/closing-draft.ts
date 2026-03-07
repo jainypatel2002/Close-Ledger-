@@ -36,6 +36,56 @@ export const appendLotteryMasterEntryToDraftLines = ({
   return [...currentLines, buildLotteryLineFromMasterEntry(entry)];
 };
 
+export const syncLotteryMasterEntryToDraftLines = ({
+  currentLines,
+  entry
+}: {
+  currentLines: ClosingFormValues["lottery_lines"];
+  entry: LotteryMasterEntry;
+}) => {
+  let updated = false;
+  const lines = currentLines.map((line) => {
+    if (line.lottery_master_entry_id !== entry.id) {
+      return line;
+    }
+
+    updated = true;
+    return {
+      ...line,
+      display_number_snapshot: entry.display_number,
+      lottery_name_snapshot: entry.name,
+      ticket_price_snapshot: Number(entry.ticket_price ?? 0),
+      bundle_size_snapshot: Number(entry.default_bundle_size ?? 100),
+      is_locked_snapshot: Boolean(entry.is_locked)
+    };
+  });
+
+  return { lines, updated };
+};
+
+export const upsertLotteryMasterEntryInDraftLines = ({
+  currentLines,
+  entry
+}: {
+  currentLines: ClosingFormValues["lottery_lines"];
+  entry: LotteryMasterEntry;
+}) => {
+  const synced = syncLotteryMasterEntryToDraftLines({
+    currentLines,
+    entry
+  });
+  const lines = appendLotteryMasterEntryToDraftLines({
+    currentLines: synced.lines,
+    entry
+  });
+
+  return {
+    lines,
+    updated: synced.updated,
+    added: lines.length !== synced.lines.length
+  };
+};
+
 export const appendMissingActiveLotteryEntriesToDraftLines = ({
   currentLines,
   entries

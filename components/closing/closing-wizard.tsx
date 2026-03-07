@@ -18,12 +18,16 @@ import { enqueueMutation } from "@/lib/offline/sync";
 import { buildLotteryLinesFromMasterEntries, computeSnapshotLineTotals } from "@/lib/lottery/snapshots";
 import { validateLotteryRange } from "@/lib/math/lottery";
 import {
-  appendLotteryMasterEntryToDraftLines,
-  buildNextClosingDraftForLotteryWorkflow,
   getNextLotteryDisplayNumber,
   sortLotteryMasterEntries,
-  upsertLotteryMasterEntry
+  upsertLotteryMasterEntry,
+  upsertLotteryMasterEntryInDraftLines
 } from "@/lib/lottery/closing-draft";
+import {
+  createLotteryMasterFormState,
+  LotteryMasterFormState,
+  parseLotteryMasterFormState
+} from "@/lib/lottery/master-form";
 
 interface ClosingWizardProps {
   store: Store;
@@ -36,7 +40,6 @@ interface ClosingWizardProps {
 
 const steps = [
   "Summary",
-  "Products",
   "Lottery",
   "Billpay",
   "Payments & Tax",
@@ -52,29 +55,15 @@ const bytesToBase64 = (bytes: Uint8Array) => {
   return btoa(binary);
 };
 
-interface LotteryConfigFormState {
-  id?: string;
-  display_number: number;
-  name: string;
-  ticket_price: number;
-  default_bundle_size: number;
-  is_active: boolean;
-  is_locked: boolean;
-  notes: string;
-}
-
 const createLotteryConfigFormState = (
   entries: LotteryMasterEntry[],
   scratchBundleSizeDefault: number
-): LotteryConfigFormState => ({
-  display_number: getNextLotteryDisplayNumber(entries),
-  name: "",
-  ticket_price: 0,
-  default_bundle_size: scratchBundleSizeDefault,
-  is_active: true,
-  is_locked: true,
-  notes: ""
-});
+): LotteryMasterFormState =>
+  createLotteryMasterFormState({
+    nextDisplayNumber: getNextLotteryDisplayNumber(entries),
+    defaultBundleSize: scratchBundleSizeDefault,
+    defaultLocked: true
+  });
 
 export const ClosingWizard = ({
   store,
@@ -93,7 +82,7 @@ export const ClosingWizard = ({
     sortLotteryMasterEntries(lotteryMasterEntries)
   );
   const [isLotteryConfigFormOpen, setIsLotteryConfigFormOpen] = useState(false);
-  const [lotteryConfigForm, setLotteryConfigForm] = useState<LotteryConfigFormState>(() =>
+  const [lotteryConfigForm, setLotteryConfigForm] = useState<LotteryMasterFormState>(() =>
     createLotteryConfigFormState(lotteryMasterEntries, store.scratch_bundle_size_default)
   );
   const form = useForm<ClosingFormValues>({
@@ -102,9 +91,9 @@ export const ClosingWizard = ({
     mode: "onBlur"
   });
 
-  const categoryArray = useFieldArray({ control: form.control, name: "category_lines" });
   const lotteryArray = useFieldArray({ control: form.control, name: "lottery_lines" });
   const billpayArray = useFieldArray({ control: form.control, name: "billpay_lines" });
+  const paymentArray = useFieldArray({ control: form.control, name: "payment_lines" });
 
   const watched = useWatch({ control: form.control });
   const deferredWatched = useDeferredValue(watched);
@@ -126,6 +115,20 @@ export const ClosingWizard = ({
   const sortedLotteryCatalog = useMemo(
     () => sortLotteryMasterEntries(lotteryCatalog),
     [lotteryCatalog]
+  );
+  const taxableSalesInput = useMemo(
+    () =>
+      (watched.category_lines ?? [])
+        .filter((line) => line.taxable)
+        .reduce((sum, line) => sum + Number(line.amount ?? 0), 0),
+    [watched.category_lines]
+  );
+  const nonTaxableSalesInput = useMemo(
+    () =>
+      (watched.category_lines ?? [])
+        .filter((line) => !line.taxable)
+        .reduce((sum, line) => sum + Number(line.amount ?? 0), 0),
+    [watched.category_lines]
   );
 
   const totals = useMemo(() => {
@@ -160,6 +163,10 @@ export const ClosingWizard = ({
         : null,
       includeBillpayInGross: Boolean(deferredWatched.include_billpay_in_gross),
       includeLotteryInGross: Boolean(deferredWatched.include_lottery_in_gross),
+      paymentLines: (deferredWatched.payment_lines ?? []).map((line) => ({
+        payment_type: line.payment_type ?? "other",
+        amount: Number(line.amount ?? 0)
+      })),
       paymentBreakdown: {
         cash_amount: Number(deferredWatched.cash_amount ?? 0),
         card_amount: Number(deferredWatched.card_amount ?? 0),
@@ -180,7 +187,35 @@ export const ClosingWizard = ({
       shouldTouch: false,
       shouldValidate: false
     });
-  }, [form, totals.lottery_amount_due, totals.lottery_total_scratch_revenue]);
+    form.setValue("cash_amount", totals.cash_amount, {
+      shouldDirty: false,
+      shouldTouch: false,
+      shouldValidate: false
+    });
+    form.setValue("card_amount", totals.card_amount, {
+      shouldDirty: false,
+      shouldTouch: false,
+      shouldValidate: false
+    });
+    form.setValue("ebt_amount", totals.ebt_amount, {
+      shouldDirty: false,
+      shouldTouch: false,
+      shouldValidate: false
+    });
+    form.setValue("other_amount", totals.other_amount, {
+      shouldDirty: false,
+      shouldTouch: false,
+      shouldValidate: false
+    });
+  }, [
+    form,
+    totals.card_amount,
+    totals.cash_amount,
+    totals.ebt_amount,
+    totals.lottery_amount_due,
+    totals.lottery_total_scratch_revenue,
+    totals.other_amount
+  ]);
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -280,29 +315,27 @@ export const ClosingWizard = ({
   };
 
   const openEditLotteryConfigForm = (entry: LotteryMasterEntry) => {
-    setLotteryConfigForm({
-      id: entry.id,
-      display_number: entry.display_number,
-      name: entry.name,
-      ticket_price: entry.ticket_price,
-      default_bundle_size: entry.default_bundle_size,
-      is_active: entry.is_active,
-      is_locked: entry.is_locked,
-      notes: entry.notes ?? ""
-    });
+    setLotteryConfigForm(
+      createLotteryMasterFormState({
+        entry,
+        nextDisplayNumber: getNextLotteryDisplayNumber(sortedLotteryCatalog),
+        defaultBundleSize: store.scratch_bundle_size_default,
+        defaultLocked: true
+      })
+    );
     setIsLotteryConfigFormOpen(true);
   };
 
-  const appendLotteryToCurrentDraft = (entry: LotteryMasterEntry) => {
+  const upsertLotteryInCurrentDraft = (entry: LotteryMasterEntry) => {
     const currentLines = form.getValues("lottery_lines") ?? [];
-    const updatedLines = appendLotteryMasterEntryToDraftLines({
+    const result = upsertLotteryMasterEntryInDraftLines({
       currentLines,
       entry
     });
-    if (updatedLines.length === currentLines.length) {
+    if (!result.added && !result.updated) {
       return false;
     }
-    form.setValue("lottery_lines", updatedLines, {
+    form.setValue("lottery_lines", result.lines, {
       shouldDirty: true,
       shouldTouch: false,
       shouldValidate: false
@@ -324,22 +357,15 @@ export const ClosingWizard = ({
     if (!canManageLotteryConfig) {
       return;
     }
-    const trimmedName = lotteryConfigForm.name.trim();
-    if (!trimmedName) {
-      toast.error("Lottery name is required.");
+    const parsed = parseLotteryMasterFormState(lotteryConfigForm);
+    if (!parsed.ok) {
+      toast.error(parsed.error);
       return;
     }
-    if (lotteryConfigForm.ticket_price < 0) {
-      toast.error("Amount must be 0 or more.");
-      return;
-    }
-    if (lotteryConfigForm.default_bundle_size <= 0) {
-      toast.error("Bundle size must be greater than 0.");
-      return;
-    }
+    const values = parsed.data;
     const conflict = sortedLotteryCatalog.find(
       (entry) =>
-        entry.display_number === lotteryConfigForm.display_number &&
+        entry.display_number === values.display_number &&
         (lotteryConfigForm.id ? entry.id !== lotteryConfigForm.id : true)
     );
     if (conflict) {
@@ -355,13 +381,13 @@ export const ClosingWizard = ({
     const payload: LotteryMasterEntry = {
       id: lotteryConfigForm.id ?? crypto.randomUUID(),
       store_id: store.id,
-      display_number: Math.max(1, Math.floor(lotteryConfigForm.display_number || 1)),
-      name: trimmedName,
-      ticket_price: Number(lotteryConfigForm.ticket_price || 0),
-      default_bundle_size: Math.max(1, Math.floor(lotteryConfigForm.default_bundle_size || 100)),
-      is_active: Boolean(lotteryConfigForm.is_active),
-      is_locked: Boolean(lotteryConfigForm.is_locked),
-      notes: lotteryConfigForm.notes.trim() || null,
+      display_number: values.display_number,
+      name: values.name,
+      ticket_price: values.ticket_price,
+      default_bundle_size: values.default_bundle_size,
+      is_active: values.is_active,
+      is_locked: values.is_locked,
+      notes: values.notes,
       created_by_app_user_id: existingEntry?.created_by_app_user_id ?? null,
       updated_by_app_user_id: existingEntry?.updated_by_app_user_id ?? null,
       created_at: existingEntry?.created_at ?? now,
@@ -414,7 +440,7 @@ export const ClosingWizard = ({
         const nextCatalog = upsertLotteryMasterEntry(sortedLotteryCatalog, saved);
         setLotteryCatalog(nextCatalog);
         await offlineDb.lotteryMasterEntries.put({ ...saved, _dirty: false });
-        appendLotteryToCurrentDraft(saved);
+        upsertLotteryInCurrentDraft(saved);
         toast.success(isEditing ? "Lottery updated." : "Lottery added.");
         if (isEditing) {
           resetLotteryConfigForm(false);
@@ -431,7 +457,7 @@ export const ClosingWizard = ({
         };
         const nextCatalog = upsertLotteryMasterEntry(sortedLotteryCatalog, localEntry);
         setLotteryCatalog(nextCatalog);
-        appendLotteryToCurrentDraft(localEntry);
+        upsertLotteryInCurrentDraft(localEntry);
         await saveLotteryOfflineAndQueue(localEntry);
         toast.info(
           error instanceof Error
@@ -450,58 +476,150 @@ export const ClosingWizard = ({
     });
   };
 
-  const persist = (status: ClosingFormValues["status"]) =>
-    form.handleSubmit((values) => {
-      if (role === "STAFF" && readOnly) {
-        toast.error("This closing has been locked. Contact admin for changes.");
-        return;
-      }
-
-      startTransition(async () => {
-        try {
-          const payload: ClosingFormValues = {
-            ...values,
-            status,
-            tax_amount_manual: values.tax_override_enabled ? values.tax_amount_manual : null,
-            lottery_total_scratch_revenue: totals.lottery_total_scratch_revenue,
-            lottery_amount_due: totals.lottery_amount_due
-          };
-          await saveAndMaybeSync({ values: payload, role });
-
-          if (autoPrepareNextEntry && status !== "DRAFT") {
-            const nextDraft = buildNextClosingDraftForLotteryWorkflow({
-              store,
-              lotteryMasterEntries: sortedLotteryCatalog,
-              businessDate: payload.business_date
-            });
-            form.reset(nextDraft);
-            setStepIndex(2);
-            setLastSavedStatus("DRAFT");
-            await offlineDb.closings.put({
-              ...nextDraft,
-              updated_at: new Date().toISOString(),
-              _dirty: false
-            });
-            toast.success("Closing saved. Lottery rows are ready for the next entry.");
-            return;
-          }
-
-          setLastSavedStatus(status);
-          form.setValue("status", status);
-          toast.success(
-            status === "DRAFT"
-              ? "Draft saved."
-              : status === "SUBMITTED"
-                ? "Closing submitted. This closing has been locked. Contact admin for changes."
-                : status === "FINALIZED"
-                  ? "Closing finalized. This closing has been locked. Contact admin for changes."
-                  : "Closing locked."
-          );
-        } catch (error) {
-          toast.error(error instanceof Error ? error.message : "Save failed.");
+  const setProductSalesTotals = ({
+    taxable,
+    nonTaxable
+  }: {
+    taxable: number;
+    nonTaxable: number;
+  }) => {
+    const current = form.getValues("category_lines") ?? [];
+    const taxableId = current.find((line) => line.taxable)?.id ?? crypto.randomUUID();
+    const nonTaxableId =
+      current.find((line) => !line.taxable)?.id ?? crypto.randomUUID();
+    form.setValue(
+      "category_lines",
+      [
+        {
+          id: taxableId,
+          category_name: "Taxable Sales",
+          amount: Math.max(0, Number(taxable || 0)),
+          taxable: true
+        },
+        {
+          id: nonTaxableId,
+          category_name: "Non-Taxable Sales",
+          amount: Math.max(0, Number(nonTaxable || 0)),
+          taxable: false
         }
-      });
-    })();
+      ],
+      {
+        shouldDirty: true,
+        shouldTouch: false,
+        shouldValidate: false
+      }
+    );
+  };
+
+  const addPaymentLine = (paymentType: "cash" | "card" | "ebt" | "other") => {
+    const existingLines = form.getValues("payment_lines") ?? [];
+    const sameTypeCount = existingLines.filter((line) => line.payment_type === paymentType).length;
+    const baseLabel =
+      paymentType === "ebt"
+        ? "EBT"
+        : paymentType === "other"
+          ? "Other"
+          : paymentType.charAt(0).toUpperCase() + paymentType.slice(1);
+    paymentArray.append({
+      id: crypto.randomUUID(),
+      payment_type: paymentType,
+      label: sameTypeCount === 0 ? baseLabel : `${baseLabel} ${sameTypeCount + 1}`,
+      amount: 0,
+      sort_order: existingLines.length
+    });
+  };
+
+  const paymentLineIndexesByType = useMemo(() => {
+    const byType = {
+      cash: [] as number[],
+      card: [] as number[],
+      ebt: [] as number[],
+      other: [] as number[]
+    };
+    (watched.payment_lines ?? []).forEach((line, index) => {
+      const type = line.payment_type ?? "other";
+      if (type === "cash" || type === "card" || type === "ebt" || type === "other") {
+        byType[type].push(index);
+      }
+    });
+    return byType;
+  }, [watched.payment_lines]);
+
+  const getFirstValidationMessage = (value: unknown): string | null => {
+    if (!value || typeof value !== "object") {
+      return null;
+    }
+    if ("message" in (value as Record<string, unknown>)) {
+      const message = (value as { message?: unknown }).message;
+      if (typeof message === "string" && message.trim()) {
+        return message;
+      }
+    }
+    for (const child of Object.values(value as Record<string, unknown>)) {
+      const nested = getFirstValidationMessage(child);
+      if (nested) {
+        return nested;
+      }
+    }
+    return null;
+  };
+
+  const persist = (status: ClosingFormValues["status"]) =>
+    form.handleSubmit(
+      (values) => {
+        if (role === "STAFF" && readOnly) {
+          toast.error("This closing has been locked. Contact admin for changes.");
+          return;
+        }
+
+        startTransition(async () => {
+          try {
+            const payload: ClosingFormValues = {
+              ...values,
+              status,
+              tax_amount_manual: values.tax_override_enabled ? values.tax_amount_manual : null,
+              lottery_total_scratch_revenue: totals.lottery_total_scratch_revenue,
+              lottery_amount_due: totals.lottery_amount_due
+            };
+            const result = await saveAndMaybeSync({
+              values: payload,
+              role,
+              requireServer: status !== "DRAFT"
+            });
+            if (result.id !== values.id) {
+              form.setValue("id", result.id, {
+                shouldDirty: false,
+                shouldTouch: false,
+                shouldValidate: false
+              });
+            }
+            setLastSavedStatus(result.status);
+            form.setValue("status", result.status, {
+              shouldDirty: false,
+              shouldTouch: false,
+              shouldValidate: false
+            });
+            toast.success(
+              result.status === "DRAFT"
+                ? result.persisted === "offline"
+                  ? "Draft saved locally. It will sync when online."
+                  : "Draft saved."
+                : result.status === "SUBMITTED"
+                  ? "Closing submitted. This closing has been locked. Contact admin for changes."
+                  : result.status === "FINALIZED"
+                    ? "Closing finalized. This closing has been locked. Contact admin for changes."
+                    : "Closing locked."
+            );
+          } catch (error) {
+            toast.error(error instanceof Error ? error.message : "Save failed.");
+          }
+        });
+      },
+      (errors) => {
+        const message = getFirstValidationMessage(errors);
+        toast.error(message || "Please fix validation errors before saving.");
+      }
+    )();
 
   const generatePdf = async () => {
     if (!allowPrintPdf && role === "STAFF") {
@@ -636,62 +754,6 @@ export const ClosingWizard = ({
         )}
 
         {stepIndex === 1 && (
-          <section className="space-y-3">
-            <h3 className="text-lg font-semibold">Product Categories</h3>
-            {categoryArray.fields.map((field, index) => (
-              <div key={field.id} className="grid gap-2 sm:grid-cols-4">
-                <input
-                  className="field sm:col-span-2"
-                  disabled={readOnly}
-                  placeholder="Category"
-                  {...form.register(`category_lines.${index}.category_name`)}
-                />
-                <input
-                  className="field"
-                  type="number"
-                  step="0.01"
-                  disabled={readOnly}
-                  {...form.register(`category_lines.${index}.amount`, { valueAsNumber: true })}
-                />
-                <label className="inline-flex items-center gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    disabled={readOnly}
-                    {...form.register(`category_lines.${index}.taxable`)}
-                  />
-                  Taxable
-                </label>
-                {!readOnly && categoryArray.fields.length > 1 && (
-                  <button
-                    type="button"
-                    className="rounded border border-white/20 px-2 py-1 text-xs hover:bg-white/10"
-                    onClick={() => categoryArray.remove(index)}
-                  >
-                    Remove
-                  </button>
-                )}
-              </div>
-            ))}
-            {!readOnly && (
-              <button
-                type="button"
-                className="rounded border border-white/20 px-3 py-1 text-xs hover:bg-white/10"
-                onClick={() =>
-                  categoryArray.append({
-                    id: crypto.randomUUID(),
-                    category_name: "",
-                    amount: 0,
-                    taxable: true
-                  })
-                }
-              >
-                Add category
-              </button>
-            )}
-          </section>
-        )}
-
-        {stepIndex === 2 && (
           <section className="space-y-4">
             <div className="flex flex-wrap items-start justify-between gap-2">
               <div>
@@ -750,7 +812,7 @@ export const ClosingWizard = ({
               <div className="rounded-xl border border-white/15 bg-black/20 p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <h4 className="text-sm font-semibold uppercase tracking-wide text-white/80">
-                    {lotteryConfigForm.id ? "Edit Locked Lottery" : "Add Lottery"}
+                    {lotteryConfigForm.id ? "Edit Lottery" : "Add Lottery"}
                   </h4>
                   <button
                     type="button"
@@ -766,12 +828,13 @@ export const ClosingWizard = ({
                     <input
                       className="field"
                       type="number"
+                      aria-label="Lottery Number"
                       min={1}
                       value={lotteryConfigForm.display_number}
                       onChange={(event) =>
                         setLotteryConfigForm((current) => ({
                           ...current,
-                          display_number: Number(event.target.value || 1)
+                          display_number: event.target.value
                         }))
                       }
                     />
@@ -780,6 +843,7 @@ export const ClosingWizard = ({
                     <label className="field-label">Lottery Name</label>
                     <input
                       className="field"
+                      aria-label="Lottery Name"
                       value={lotteryConfigForm.name}
                       onChange={(event) =>
                         setLotteryConfigForm((current) => ({
@@ -794,13 +858,14 @@ export const ClosingWizard = ({
                     <input
                       className="field"
                       type="number"
+                      aria-label="Lottery Amount"
                       step="0.01"
                       min={0}
                       value={lotteryConfigForm.ticket_price}
                       onChange={(event) =>
                         setLotteryConfigForm((current) => ({
                           ...current,
-                          ticket_price: Number(event.target.value || 0)
+                          ticket_price: event.target.value
                         }))
                       }
                     />
@@ -810,12 +875,13 @@ export const ClosingWizard = ({
                     <input
                       className="field"
                       type="number"
+                      aria-label="Default Bundle Size"
                       min={1}
                       value={lotteryConfigForm.default_bundle_size}
                       onChange={(event) =>
                         setLotteryConfigForm((current) => ({
                           ...current,
-                          default_bundle_size: Number(event.target.value || 100)
+                          default_bundle_size: event.target.value
                         }))
                       }
                     />
@@ -851,6 +917,7 @@ export const ClosingWizard = ({
                   <label className="field-label">Notes (optional)</label>
                   <textarea
                     className="field"
+                    aria-label="Lottery Notes"
                     rows={2}
                     value={lotteryConfigForm.notes}
                     onChange={(event) =>
@@ -1133,7 +1200,7 @@ export const ClosingWizard = ({
           </section>
         )}
 
-        {stepIndex === 3 && (
+        {stepIndex === 2 && (
           <section className="space-y-3">
             <h3 className="text-lg font-semibold">Billpay</h3>
             {billpayArray.fields.map((field, index) => (
@@ -1204,97 +1271,247 @@ export const ClosingWizard = ({
           </section>
         )}
 
-        {stepIndex === 4 && (
-          <section className="space-y-3">
+        {stepIndex === 3 && (
+          <section className="space-y-4">
             <h3 className="text-lg font-semibold">Payments & Tax</h3>
-            <div className="grid gap-2 sm:grid-cols-4">
-              <div>
-                <label className="field-label">Cash</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  className="field"
-                  disabled={readOnly}
-                  {...form.register("cash_amount", { valueAsNumber: true })}
-                />
-              </div>
-              <div>
-                <label className="field-label">Card</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  className="field"
-                  disabled={readOnly}
-                  {...form.register("card_amount", { valueAsNumber: true })}
-                />
-              </div>
-              <div>
-                <label className="field-label">EBT</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  className="field"
-                  disabled={readOnly}
-                  {...form.register("ebt_amount", { valueAsNumber: true })}
-                />
-              </div>
-              <div>
-                <label className="field-label">Other</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  className="field"
-                  disabled={readOnly}
-                  {...form.register("other_amount", { valueAsNumber: true })}
-                />
+            <input type="hidden" {...form.register("cash_amount", { valueAsNumber: true })} />
+            <input type="hidden" {...form.register("card_amount", { valueAsNumber: true })} />
+            <input type="hidden" {...form.register("ebt_amount", { valueAsNumber: true })} />
+            <input type="hidden" {...form.register("other_amount", { valueAsNumber: true })} />
+
+            <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+              <h4 className="text-sm font-semibold uppercase tracking-wide text-white/80">
+                Product Sales Summary
+              </h4>
+              <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                <div>
+                  <label className="field-label">Taxable Sales</label>
+                  <input
+                    className="field"
+                    type="number"
+                    step="0.01"
+                    min={0}
+                    disabled={readOnly}
+                    value={taxableSalesInput}
+                    onChange={(event) =>
+                      setProductSalesTotals({
+                        taxable: Number(event.target.value || 0),
+                        nonTaxable: nonTaxableSalesInput
+                      })
+                    }
+                  />
+                </div>
+                <div>
+                  <label className="field-label">Non-Taxable Sales</label>
+                  <input
+                    className="field"
+                    type="number"
+                    step="0.01"
+                    min={0}
+                    disabled={readOnly}
+                    value={nonTaxableSalesInput}
+                    onChange={(event) =>
+                      setProductSalesTotals({
+                        taxable: taxableSalesInput,
+                        nonTaxable: Number(event.target.value || 0)
+                      })
+                    }
+                  />
+                </div>
+                <div className="rounded-lg border border-brand-crimson/35 bg-brand-crimson/10 px-3 py-2">
+                  <p className="text-[11px] uppercase tracking-wide text-white/75">
+                    Product Sales Total
+                  </p>
+                  <p className="mt-1 text-lg font-bold">
+                    {formatCurrency(totals.product_sales_total)}
+                  </p>
+                </div>
               </div>
             </div>
-            <div className="grid gap-2 sm:grid-cols-3">
-              <div>
-                <label className="field-label">Tax mode</label>
-                <select className="field" disabled={readOnly} {...form.register("tax_mode")}>
-                  <option value="AUTO">AUTO</option>
-                  <option value="MANUAL">MANUAL</option>
-                </select>
-              </div>
-              <div>
-                <label className="field-label">Tax rate</label>
-                <input
-                  className="field"
-                  type="number"
-                  step="0.0001"
-                  disabled={readOnly}
-                  {...form.register("tax_rate_used", { valueAsNumber: true })}
-                />
-              </div>
-              <div className="space-y-1">
-                <label className="field-label">Tax override amount</label>
-                <input
-                  className="field"
-                  type="number"
-                  step="0.01"
-                  disabled={readOnly || !watched.tax_override_enabled}
-                  {...form.register("tax_amount_manual", {
-                    setValueAs: (value) =>
-                      value === "" || value === null || value === undefined
-                        ? null
-                        : Number(value)
-                  })}
-                />
-                <label className="inline-flex items-center gap-2 text-xs text-white/75">
+
+            <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+              <h4 className="text-sm font-semibold uppercase tracking-wide text-white/80">Tax</h4>
+              <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                <div>
+                  <label className="field-label">Tax mode</label>
+                  <select className="field" disabled={readOnly} {...form.register("tax_mode")}>
+                    <option value="AUTO">AUTO</option>
+                    <option value="MANUAL">MANUAL</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="field-label">Tax rate</label>
                   <input
-                    type="checkbox"
+                    className="field"
+                    type="number"
+                    step="0.0001"
+                    min={0}
                     disabled={readOnly}
-                    {...form.register("tax_override_enabled")}
+                    {...form.register("tax_rate_used", { valueAsNumber: true })}
                   />
-                  Override tax amount
-                </label>
+                </div>
+                <div className="space-y-1">
+                  <label className="field-label">Tax override amount</label>
+                  <input
+                    className="field"
+                    type="number"
+                    step="0.01"
+                    min={0}
+                    disabled={readOnly || !watched.tax_override_enabled}
+                    {...form.register("tax_amount_manual", {
+                      setValueAs: (value) =>
+                        value === "" || value === null || value === undefined
+                          ? null
+                          : Number(value)
+                    })}
+                  />
+                  <label className="inline-flex items-center gap-2 text-xs text-white/75">
+                    <input
+                      type="checkbox"
+                      disabled={readOnly}
+                      {...form.register("tax_override_enabled")}
+                    />
+                    Override tax amount
+                  </label>
+                </div>
+              </div>
+              <div className="mt-3 grid gap-2 sm:grid-cols-4">
+                <p className="rounded border border-white/10 px-3 py-2 text-xs">
+                  Taxable Sales: <strong>{formatCurrency(totals.taxable_sales)}</strong>
+                </p>
+                <p className="rounded border border-white/10 px-3 py-2 text-xs">
+                  Non-Taxable Sales: <strong>{formatCurrency(totals.non_taxable_sales)}</strong>
+                </p>
+                <p className="rounded border border-white/10 px-3 py-2 text-xs">
+                  Tax Rate: <strong>{(Number(watched.tax_rate_used ?? 0) * 100).toFixed(2)}%</strong>
+                </p>
+                <p className="rounded border border-brand-crimson/35 bg-brand-crimson/10 px-3 py-2 text-xs">
+                  Tax Total: <strong>{formatCurrency(totals.tax_amount)}</strong>
+                </p>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h4 className="text-sm font-semibold uppercase tracking-wide text-white/80">
+                  Payments
+                </h4>
+                {!readOnly && (
+                  <div className="flex flex-wrap gap-1">
+                    <button
+                      type="button"
+                      className="rounded border border-white/20 px-2 py-1 text-[11px] hover:bg-white/10"
+                      onClick={() => addPaymentLine("cash")}
+                    >
+                      Add Cash
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded border border-white/20 px-2 py-1 text-[11px] hover:bg-white/10"
+                      onClick={() => addPaymentLine("card")}
+                    >
+                      Add Card
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded border border-white/20 px-2 py-1 text-[11px] hover:bg-white/10"
+                      onClick={() => addPaymentLine("ebt")}
+                    >
+                      Add EBT
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded border border-white/20 px-2 py-1 text-[11px] hover:bg-white/10"
+                      onClick={() => addPaymentLine("other")}
+                    >
+                      Add Other
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-3 space-y-3">
+                {(["cash", "card", "ebt", "other"] as const).map((type) => (
+                  <div key={type} className="rounded-lg border border-white/10 p-2">
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-white/70">
+                      {type === "ebt" ? "EBT" : type}
+                    </p>
+                    {paymentLineIndexesByType[type].length === 0 && (
+                      <p className="text-xs text-white/55">No {type} lines.</p>
+                    )}
+                    <div className="space-y-2">
+                      {paymentLineIndexesByType[type].map((index) => (
+                        <div
+                          key={paymentArray.fields[index]?.id ?? index}
+                          className="grid gap-2 sm:grid-cols-[1fr_180px_auto]"
+                        >
+                          <input
+                            type="hidden"
+                            {...form.register(`payment_lines.${index}.payment_type`)}
+                          />
+                          <input
+                            type="hidden"
+                            {...form.register(`payment_lines.${index}.sort_order`, {
+                              valueAsNumber: true
+                            })}
+                          />
+                          <input
+                            className="field"
+                            disabled={readOnly}
+                            placeholder="Label"
+                            {...form.register(`payment_lines.${index}.label`)}
+                          />
+                          <input
+                            className="field"
+                            type="number"
+                            min={0}
+                            step="0.01"
+                            disabled={readOnly}
+                            {...form.register(`payment_lines.${index}.amount`, {
+                              setValueAs: (value) =>
+                                value === "" || value === null || value === undefined
+                                  ? 0
+                                  : Number(value)
+                            })}
+                          />
+                          {!readOnly && (
+                            <button
+                              type="button"
+                              className="rounded border border-white/20 px-2 py-1 text-xs hover:bg-white/10"
+                              onClick={() => paymentArray.remove(index)}
+                            >
+                              Remove
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
+                <p className="rounded border border-white/10 px-3 py-2 text-xs">
+                  Total Cash: <strong>{formatCurrency(totals.cash_amount)}</strong>
+                </p>
+                <p className="rounded border border-white/10 px-3 py-2 text-xs">
+                  Total Card: <strong>{formatCurrency(totals.card_amount)}</strong>
+                </p>
+                <p className="rounded border border-white/10 px-3 py-2 text-xs">
+                  Total EBT: <strong>{formatCurrency(totals.ebt_amount)}</strong>
+                </p>
+                <p className="rounded border border-white/10 px-3 py-2 text-xs">
+                  Total Other: <strong>{formatCurrency(totals.other_amount)}</strong>
+                </p>
+                <p className="rounded border border-brand-crimson/35 bg-brand-crimson/10 px-3 py-2 text-xs">
+                  Grand Payments Total: <strong>{formatCurrency(totals.payments_total)}</strong>
+                </p>
               </div>
             </div>
           </section>
         )}
 
-        {stepIndex === 5 && (
+        {stepIndex === 4 && (
           <section className="space-y-2">
             <h3 className="text-lg font-semibold">Notes</h3>
             <textarea
@@ -1307,7 +1524,7 @@ export const ClosingWizard = ({
           </section>
         )}
 
-        {stepIndex === 6 && (
+        {stepIndex === 5 && (
           <section className="space-y-3">
             <h3 className="text-lg font-semibold">Review Totals</h3>
             <div className="grid gap-2 sm:grid-cols-2">

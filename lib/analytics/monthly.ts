@@ -19,6 +19,7 @@ interface MonthlyRawData {
   closings: Record<string, unknown>[];
   lotteryLines: Record<string, unknown>[];
   billpayLines: Record<string, unknown>[];
+  paymentLines: Record<string, unknown>[];
   lotteryMasterEntries: LotteryMasterEntry[];
 }
 
@@ -147,7 +148,7 @@ const loadMonthlyRawData = async ({
 
   const closingIds = (closings ?? []).map((row) => String(row.id));
 
-  const [lotteryResult, billpayResult, masterResult] = await Promise.all([
+  const [lotteryResult, billpayResult, paymentResult, masterResult] = await Promise.all([
     closingIds.length > 0
       ? supabase
           .from("lottery_scratch_lines")
@@ -156,6 +157,9 @@ const loadMonthlyRawData = async ({
       : Promise.resolve({ data: [], error: null }),
     closingIds.length > 0
       ? supabase.from("billpay_lines").select("*").in("closing_day_id", closingIds)
+      : Promise.resolve({ data: [], error: null }),
+    closingIds.length > 0
+      ? supabase.from("payment_lines").select("*").in("closing_day_id", closingIds)
       : Promise.resolve({ data: [], error: null }),
     supabase
       .from("lottery_master_entries")
@@ -171,6 +175,12 @@ const loadMonthlyRawData = async ({
     throw billpayResult.error;
   }
   if (
+    paymentResult.error &&
+    !isSupabaseMissingTableError(paymentResult.error, "payment_lines")
+  ) {
+    throw paymentResult.error;
+  }
+  if (
     masterResult.error &&
     !isSupabaseMissingTableError(masterResult.error, "lottery_master_entries")
   ) {
@@ -182,6 +192,7 @@ const loadMonthlyRawData = async ({
     closings: (closings ?? []) as Record<string, unknown>[],
     lotteryLines: (lotteryResult.data ?? []) as Record<string, unknown>[],
     billpayLines: (billpayResult.data ?? []) as Record<string, unknown>[],
+    paymentLines: (paymentResult.data ?? []) as Record<string, unknown>[],
     lotteryMasterEntries: (masterResult.data ?? []) as LotteryMasterEntry[]
   };
 };
@@ -448,11 +459,50 @@ export const aggregateMonthlyLotteryData = ({
   };
 };
 
-export const aggregateMonthlyPaymentData = (closings: Record<string, unknown>[]) => {
-  const cash = sum(closings, "cash_amount");
-  const card = sum(closings, "card_amount");
-  const ebt = sum(closings, "ebt_amount");
-  const other = sum(closings, "other_amount");
+export const aggregateMonthlyPaymentData = ({
+  closings,
+  paymentLines
+}: {
+  closings: Record<string, unknown>[];
+  paymentLines: Record<string, unknown>[];
+}) => {
+  const byType = new Map<string, number>([
+    ["cash", 0],
+    ["card", 0],
+    ["ebt", 0],
+    ["other", 0]
+  ]);
+  const closingsWithLines = new Set<string>();
+
+  if (paymentLines.length > 0) {
+    paymentLines.forEach((line) => {
+      const type = String(line.payment_type ?? "").toLowerCase();
+      if (!byType.has(type)) {
+        return;
+      }
+      const closingId = String(line.closing_day_id ?? "");
+      if (closingId) {
+        closingsWithLines.add(closingId);
+      }
+      byType.set(type, toMoney((byType.get(type) ?? 0) + Number(line.amount ?? 0)));
+    });
+  }
+
+  closings.forEach((closing) => {
+    const closingId = String(closing.id ?? "");
+    if (closingId && closingsWithLines.has(closingId)) {
+      return;
+    }
+    byType.set("cash", toMoney((byType.get("cash") ?? 0) + Number(closing.cash_amount ?? 0)));
+    byType.set("card", toMoney((byType.get("card") ?? 0) + Number(closing.card_amount ?? 0)));
+    byType.set("ebt", toMoney((byType.get("ebt") ?? 0) + Number(closing.ebt_amount ?? 0)));
+    byType.set("other", toMoney((byType.get("other") ?? 0) + Number(closing.other_amount ?? 0)));
+  });
+
+  const cash = byType.get("cash") ?? 0;
+  const card = byType.get("card") ?? 0;
+  const ebt = byType.get("ebt") ?? 0;
+  const other = byType.get("other") ?? 0;
   const total = toMoney(cash + card + ebt + other);
 
   return {
@@ -553,7 +603,15 @@ export const getMonthlyAnalytics = async ({
     total_lottery_amount_due_month: lottery.summary.total_amount_due,
     total_scratch_tickets_sold_month: lottery.summary.total_scratch_tickets_sold
   };
-  const payments = aggregateMonthlyPaymentData(raw.closings);
+  const payments = aggregateMonthlyPaymentData({
+    closings: raw.closings,
+    paymentLines: raw.paymentLines
+  });
+  metrics.total_cash_month = payments.rows.find((row) => row.name === "Cash")?.amount ?? 0;
+  metrics.total_card_month = payments.rows.find((row) => row.name === "Card")?.amount ?? 0;
+  metrics.total_ebt_month = payments.rows.find((row) => row.name === "EBT")?.amount ?? 0;
+  metrics.total_other_payments_month =
+    payments.rows.find((row) => row.name === "Other")?.amount ?? 0;
   const billpay = aggregateMonthlyBillpayData({
     closings: raw.closings,
     billpayLines: raw.billpayLines
@@ -684,6 +742,10 @@ export const getMonthlyAnalytics = async ({
       rangeMonths: 1
     });
     const previousMetrics = aggregateMonthlyClosingData(previous.closings);
+    const previousPayments = aggregateMonthlyPaymentData({
+      closings: previous.closings,
+      paymentLines: previous.paymentLines
+    });
 
     compare = {
       gross_collected: toDelta(
@@ -706,8 +768,14 @@ export const getMonthlyAnalytics = async ({
         metrics.total_tax_collected_month,
         previousMetrics.total_tax_collected_month
       ),
-      cash: toDelta(metrics.total_cash_month, previousMetrics.total_cash_month),
-      card: toDelta(metrics.total_card_month, previousMetrics.total_card_month)
+      cash: toDelta(
+        metrics.total_cash_month,
+        previousPayments.rows.find((row) => row.name === "Cash")?.amount ?? 0
+      ),
+      card: toDelta(
+        metrics.total_card_month,
+        previousPayments.rows.find((row) => row.name === "Card")?.amount ?? 0
+      )
     };
   }
 

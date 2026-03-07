@@ -66,6 +66,11 @@ interface PdfInput {
     fee_revenue: number;
     txn_count: number;
   }>;
+  paymentLines: Array<{
+    payment_type?: string;
+    label?: string;
+    amount?: number;
+  }>;
   chartData: {
     gross: ChartSlice[];
     payments: ChartSlice[];
@@ -244,17 +249,60 @@ export const generateClosingPdf = async (input: PdfInput) => {
     font: bold,
     color: rgb(0.1, 0.1, 0.1)
   });
+  const paymentLines =
+    input.paymentLines.length > 0
+      ? input.paymentLines.map((line) => ({
+          payment_type: String(line.payment_type ?? "other").toLowerCase(),
+          label: String(line.label ?? "Payment"),
+          amount: Number(line.amount ?? 0)
+        }))
+      : [
+          { payment_type: "cash", label: "Cash", amount: Number(input.closing.cash_amount ?? 0) },
+          { payment_type: "card", label: "Card", amount: Number(input.closing.card_amount ?? 0) },
+          { payment_type: "ebt", label: "EBT", amount: Number(input.closing.ebt_amount ?? 0) },
+          { payment_type: "other", label: "Other", amount: Number(input.closing.other_amount ?? 0) }
+        ];
+  const paymentTotals = {
+    cash: paymentLines
+      .filter((line) => line.payment_type === "cash")
+      .reduce((sum, line) => sum + line.amount, 0),
+    card: paymentLines
+      .filter((line) => line.payment_type === "card")
+      .reduce((sum, line) => sum + line.amount, 0),
+    ebt: paymentLines
+      .filter((line) => line.payment_type === "ebt")
+      .reduce((sum, line) => sum + line.amount, 0),
+    other: paymentLines
+      .filter((line) => line.payment_type === "other")
+      .reduce((sum, line) => sum + line.amount, 0)
+  };
   const paymentRows: Array<[string, string]> = [
-    ["Cash", money(input.closing.cash_amount)],
-    ["Card", money(input.closing.card_amount)],
-    ["EBT", money(input.closing.ebt_amount)],
-    ["Other", money(input.closing.other_amount)]
+    ["Total Cash", money(paymentTotals.cash)],
+    ["Total Card", money(paymentTotals.card)],
+    ["Total EBT", money(paymentTotals.ebt)],
+    ["Total Other", money(paymentTotals.other)]
   ];
   let paymentCursor = 1062;
   paymentRows.forEach(([label, value]) => {
     page.drawText(label, { x: 430, y: paymentCursor, size: 10, font });
     page.drawText(value, { x: 570, y: paymentCursor, size: 10, font: bold });
     paymentCursor -= 14;
+  });
+  paymentCursor -= 4;
+  paymentLines.slice(0, 8).forEach((line) => {
+    page.drawText(`${line.label} (${String(line.payment_type).toUpperCase()})`, {
+      x: 430,
+      y: paymentCursor,
+      size: 8,
+      font
+    });
+    page.drawText(money(line.amount), {
+      x: 640,
+      y: paymentCursor,
+      size: 8,
+      font: bold
+    });
+    paymentCursor -= 11;
   });
 
   page.drawText("Lottery Scratch Section", {

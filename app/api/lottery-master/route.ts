@@ -60,6 +60,22 @@ export async function POST(request: NextRequest) {
     }
 
     const supabase = await createSupabaseServerClient();
+    const { data: existingByNumber, error: existingByNumberError } = await supabase
+      .from("lottery_master_entries")
+      .select("id")
+      .eq("store_id", payload.store_id)
+      .eq("display_number", payload.display_number)
+      .maybeSingle();
+    if (existingByNumberError) {
+      throw existingByNumberError;
+    }
+    if (existingByNumber) {
+      return NextResponse.json(
+        { error: "Lottery number already exists for this store." },
+        { status: 409 }
+      );
+    }
+
     const { data, error } = await supabase
       .from("lottery_master_entries")
       .insert({

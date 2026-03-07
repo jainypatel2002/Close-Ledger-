@@ -31,13 +31,53 @@ export async function PATCH(
       return NextResponse.json({ error: "Admin permission required." }, { status: 403 });
     }
 
+    if (payload.display_number !== undefined) {
+      const { data: conflictingEntry, error: conflictingEntryError } = await supabase
+        .from("lottery_master_entries")
+        .select("id")
+        .eq("store_id", existing.store_id)
+        .eq("display_number", payload.display_number)
+        .neq("id", id)
+        .maybeSingle();
+      if (conflictingEntryError) {
+        throw conflictingEntryError;
+      }
+      if (conflictingEntry) {
+        return NextResponse.json(
+          { error: "Lottery number already exists for this store." },
+          { status: 409 }
+        );
+      }
+    }
+
+    const updateData: Record<string, unknown> = {
+      updated_by_app_user_id: user.id
+    };
+    if (payload.display_number !== undefined) {
+      updateData.display_number = payload.display_number;
+    }
+    if (payload.name !== undefined) {
+      updateData.name = payload.name;
+    }
+    if (payload.ticket_price !== undefined) {
+      updateData.ticket_price = payload.ticket_price;
+    }
+    if (payload.default_bundle_size !== undefined) {
+      updateData.default_bundle_size = payload.default_bundle_size;
+    }
+    if (payload.is_active !== undefined) {
+      updateData.is_active = payload.is_active;
+    }
+    if (payload.is_locked !== undefined) {
+      updateData.is_locked = payload.is_locked;
+    }
+    if ("notes" in payload) {
+      updateData.notes = payload.notes ?? null;
+    }
+
     const { data, error } = await supabase
       .from("lottery_master_entries")
-      .update({
-        ...payload,
-        notes: payload.notes ?? null,
-        updated_by_app_user_id: user.id
-      })
+      .update(updateData)
       .eq("id", id)
       .eq("store_id", existing.store_id)
       .select("*")

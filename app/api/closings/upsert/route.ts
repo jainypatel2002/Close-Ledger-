@@ -24,6 +24,18 @@ interface NormalizedLotteryLine {
 }
 
 export async function POST(request: NextRequest) {
+  let diagnostics: {
+    action: string;
+    closingId: string | null;
+    storeId: string | null;
+    userId: string | null;
+  } = {
+    action: "UNKNOWN",
+    closingId: null,
+    storeId: null,
+    userId: null
+  };
+
   try {
     const body = await request.json();
     const parsed = closingFormSchema.parse(body);
@@ -32,6 +44,12 @@ export async function POST(request: NextRequest) {
     if (!user) {
       return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
     }
+    diagnostics = {
+      action: parsed.status,
+      closingId: parsed.id,
+      storeId: parsed.store_id,
+      userId: user.id
+    };
 
     const membership = await getMembershipForStore(parsed.store_id);
     if (!membership) {
@@ -42,14 +60,36 @@ export async function POST(request: NextRequest) {
     }
     const today = new Date().toISOString().slice(0, 10);
 
-    const { data: existing, error: existingError } = await supabase
+    const { data: existingById, error: existingByIdError } = await supabase
       .from("closing_days")
       .select("*")
       .eq("id", parsed.id)
       .maybeSingle();
-    if (existingError) {
-      throw existingError;
+    if (existingByIdError) {
+      throw existingByIdError;
     }
+
+    const { data: existingByDate, error: existingByDateError } = await supabase
+      .from("closing_days")
+      .select("*")
+      .eq("store_id", parsed.store_id)
+      .eq("business_date", parsed.business_date)
+      .maybeSingle();
+    if (existingByDateError) {
+      throw existingByDateError;
+    }
+
+    if (existingById && existingByDate && existingById.id !== existingByDate.id) {
+      return NextResponse.json(
+        {
+          error:
+            "Another closing already exists for this business date. Open that closing from history."
+        },
+        { status: 409 }
+      );
+    }
+
+    const existing = existingById ?? existingByDate ?? null;
 
     if (existing && membership.role === "STAFF") {
       if (
@@ -273,6 +313,10 @@ export async function POST(request: NextRequest) {
       tax_amount_manual: parsed.tax_override_enabled ? parsed.tax_amount_manual ?? 0 : null,
       includeBillpayInGross: parsed.include_billpay_in_gross,
       includeLotteryInGross: parsed.include_lottery_in_gross,
+      paymentLines: parsed.payment_lines.map((line) => ({
+        payment_type: line.payment_type,
+        amount: line.amount
+      })),
       paymentBreakdown: {
         cash_amount: parsed.cash_amount,
         card_amount: parsed.card_amount,
@@ -290,7 +334,7 @@ export async function POST(request: NextRequest) {
       membership.role === "STAFF" && shouldLock ? "DRAFT" : parsed.status;
 
     const closingPayload = {
-      id: parsed.id,
+      id: existing?.id ?? parsed.id,
       store_id: parsed.store_id,
       business_date: parsed.business_date,
       created_by: existing?.created_by ?? user.id,
@@ -316,10 +360,11 @@ export async function POST(request: NextRequest) {
       billpay_collected_total: totals.billpay_collected_total,
       billpay_fee_revenue: totals.billpay_fee_revenue,
       billpay_transactions_count: totals.billpay_transactions_count,
-      cash_amount: parsed.cash_amount,
-      card_amount: parsed.card_amount,
-      ebt_amount: parsed.ebt_amount,
-      other_amount: parsed.other_amount,
+      cash_amount: totals.cash_amount,
+      card_amount: totals.card_amount,
+      ebt_amount: totals.ebt_amount,
+      other_amount: totals.other_amount,
+      payments_total: totals.payments_total,
       cash_over_short: totals.cash_over_short,
       notes: parsed.notes ?? null,
       include_billpay_in_gross: parsed.include_billpay_in_gross,
@@ -332,6 +377,7 @@ export async function POST(request: NextRequest) {
       locked_by: statusForLineUpsert === "LOCKED" ? user.id : existing?.locked_by ?? null,
       version: (existing?.version ?? 0) + 1
     };
+    diagnostics.closingId = String(closingPayload.id);
 
     const { data: saved, error: saveError } = await supabase
       .from("closing_days")
@@ -344,30 +390,50 @@ export async function POST(request: NextRequest) {
 
     const closingId = saved.id;
 
-    const replaceLines = async <
-      T extends "closing_category_lines" | "lottery_scratch_lines" | "billpay_lines",
+    const syncLines = async <
+      T extends
+        | "closing_category_lines"
+        | "lottery_scratch_lines"
+        | "billpay_lines"
+        | "payment_lines",
       R extends Record<string, unknown>
     >(
       table: T,
       rows: R[]
     ) => {
-      const { error: deleteError } = await supabase
-        .from(table)
-        .delete()
-        .eq("closing_day_id", closingId);
-      if (deleteError) {
-        throw deleteError;
+      if (rows.length > 0) {
+        const { error: upsertError } = await supabase.from(table).upsert(rows, {
+          onConflict: "id"
+        });
+        if (upsertError) {
+          throw upsertError;
+        }
       }
-      if (rows.length === 0) {
+
+      const ids = rows.map((row) => String(row.id ?? ""));
+      if (ids.length === 0) {
+        const { error: clearError } = await supabase
+          .from(table)
+          .delete()
+          .eq("closing_day_id", closingId);
+        if (clearError) {
+          throw clearError;
+        }
         return;
       }
-      const { error: insertError } = await supabase.from(table).insert(rows);
-      if (insertError) {
-        throw insertError;
+
+      const escapedIds = ids.map((id) => `"${id}"`).join(",");
+      const { error: deleteStaleError } = await supabase
+        .from(table)
+        .delete()
+        .eq("closing_day_id", closingId)
+        .not("id", "in", `(${escapedIds})`);
+      if (deleteStaleError) {
+        throw deleteStaleError;
       }
     };
 
-    await replaceLines(
+    await syncLines(
       "closing_category_lines",
       parsed.category_lines.map((line) => ({
         id: line.id,
@@ -378,7 +444,7 @@ export async function POST(request: NextRequest) {
       }))
     );
 
-    await replaceLines(
+    await syncLines(
       "lottery_scratch_lines",
       normalizedLotteryLines.map((line) => {
         const computed = computeSnapshotLineTotals({
@@ -436,7 +502,7 @@ export async function POST(request: NextRequest) {
       })
     );
 
-    await replaceLines(
+    await syncLines(
       "billpay_lines",
       parsed.billpay_lines.map((line) => ({
         id: line.id,
@@ -445,6 +511,21 @@ export async function POST(request: NextRequest) {
         amount_collected: line.amount_collected,
         fee_revenue: line.fee_revenue,
         txn_count: line.txn_count
+      }))
+    );
+
+    await syncLines(
+      "payment_lines",
+      parsed.payment_lines.map((line, index) => ({
+        id: line.id,
+        closing_day_id: closingId,
+        store_id: parsed.store_id,
+        payment_type: line.payment_type,
+        label: line.label,
+        amount: line.amount,
+        sort_order: Number.isFinite(line.sort_order) ? line.sort_order : index,
+        created_by_app_user_id: user.id,
+        updated_by_app_user_id: user.id
       }))
     );
 
@@ -488,7 +569,25 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ id: closingId, status: finalSaved.status });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to save closing.";
-    return NextResponse.json({ error: message }, { status: 400 });
+    const rawMessage = error instanceof Error ? error.message : "Unable to save closing.";
+    const errorCode =
+      typeof error === "object" && error !== null && "code" in error
+        ? String((error as { code?: unknown }).code ?? "")
+        : "";
+    const duplicateDayConflict =
+      errorCode === "23505" &&
+      (rawMessage.includes("closing_days_store_id_business_date_key") ||
+        rawMessage.toLowerCase().includes("business_date"));
+    const message = duplicateDayConflict
+      ? "A closing already exists for this store and business date."
+      : rawMessage;
+
+    console.error("closing_upsert_failed", {
+      ...diagnostics,
+      errorCode,
+      message: rawMessage
+    });
+
+    return NextResponse.json({ error: message }, { status: duplicateDayConflict ? 409 : 400 });
   }
 }

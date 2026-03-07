@@ -5,12 +5,14 @@ export const toClosingFormValues = ({
   closing,
   categories,
   lottery,
-  billpay
+  billpay,
+  paymentLines
 }: {
   closing: Record<string, unknown>;
   categories: Record<string, unknown>[];
   lottery: Record<string, unknown>[];
   billpay: Record<string, unknown>[];
+  paymentLines: Record<string, unknown>[];
 }): ClosingFormValues => {
   const lotteryLines = lottery.map((line) => {
     const rawStart = Number(line.start_number ?? line.start_ticket_number ?? 0);
@@ -90,6 +92,77 @@ export const toClosingFormValues = ({
       ? computeLotteryAmountDue(lotteryTotalScratchRevenue, lotteryPaidOutAmount, lotteryOnlineAmount)
       : Number(closing.lottery_amount_due);
 
+  const normalizedCategoryLines =
+    categories.length > 0
+      ? categories.map((line) => ({
+          id: String(line.id),
+          category_name: String(line.category_name ?? ""),
+          amount: Number(line.amount ?? 0),
+          taxable: Boolean(line.taxable)
+        }))
+      : [
+          {
+            id: crypto.randomUUID(),
+            category_name: "Taxable Sales",
+            amount: Number(closing.taxable_sales ?? 0),
+            taxable: true
+          },
+          {
+            id: crypto.randomUUID(),
+            category_name: "Non-Taxable Sales",
+            amount: Number(closing.non_taxable_sales ?? 0),
+            taxable: false
+          }
+        ];
+
+  const normalizedPaymentLines =
+    paymentLines.length > 0
+      ? paymentLines
+          .map((line) => ({
+            id: String(line.id),
+            payment_type: String(line.payment_type ?? "other").toLowerCase(),
+            label: String(line.label ?? "Payment"),
+            amount: Number(line.amount ?? 0),
+            sort_order: Number(line.sort_order ?? 0)
+          }))
+          .filter((line) =>
+            line.payment_type === "cash" ||
+            line.payment_type === "card" ||
+            line.payment_type === "ebt" ||
+            line.payment_type === "other"
+          )
+          .sort((a, b) => a.sort_order - b.sort_order)
+      : [
+          {
+            id: crypto.randomUUID(),
+            payment_type: "cash",
+            label: "Cash",
+            amount: Number(closing.cash_amount ?? 0),
+            sort_order: 0
+          },
+          {
+            id: crypto.randomUUID(),
+            payment_type: "card",
+            label: "Card",
+            amount: Number(closing.card_amount ?? 0),
+            sort_order: 1
+          },
+          {
+            id: crypto.randomUUID(),
+            payment_type: "ebt",
+            label: "EBT",
+            amount: Number(closing.ebt_amount ?? 0),
+            sort_order: 2
+          },
+          {
+            id: crypto.randomUUID(),
+            payment_type: "other",
+            label: "Other",
+            amount: Number(closing.other_amount ?? 0),
+            sort_order: 3
+          }
+        ];
+
   return {
     id: String(closing.id),
     store_id: String(closing.store_id),
@@ -115,12 +188,7 @@ export const toClosingFormValues = ({
     notes: String(closing.notes ?? ""),
     include_billpay_in_gross: Boolean(closing.include_billpay_in_gross),
     include_lottery_in_gross: Boolean(closing.include_lottery_in_gross),
-    category_lines: categories.map((line) => ({
-      id: String(line.id),
-      category_name: String(line.category_name ?? ""),
-      amount: Number(line.amount ?? 0),
-      taxable: Boolean(line.taxable)
-    })),
+    category_lines: normalizedCategoryLines,
     lottery_lines: lotteryLines,
     billpay_lines: billpay.map((line) => ({
       id: String(line.id),
@@ -129,6 +197,7 @@ export const toClosingFormValues = ({
       fee_revenue: Number(line.fee_revenue ?? 0),
       txn_count: Number(line.txn_count ?? 0)
     })),
+    payment_lines: normalizedPaymentLines as ClosingFormValues["payment_lines"],
     reopen_reason: ""
   };
 };

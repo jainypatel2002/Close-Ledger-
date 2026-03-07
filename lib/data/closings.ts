@@ -1,5 +1,6 @@
 import { addDays, format } from "date-fns";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { isSupabaseMissingTableError } from "@/lib/supabase/errors";
 
 export const getTodayClosingForStore = async (storeId: string) => {
   const supabase = await createSupabaseServerClient();
@@ -31,7 +32,7 @@ export const getClosingById = async (closingId: string) => {
     throw error;
   }
 
-  const [categories, lottery, billpay, documents] = await Promise.all([
+  const [categories, lottery, billpay, paymentLines, documents] = await Promise.all([
     supabase
       .from("closing_category_lines")
       .select("*")
@@ -48,6 +49,11 @@ export const getClosingById = async (closingId: string) => {
       .eq("closing_day_id", closingId)
       .order("created_at", { ascending: true }),
     supabase
+      .from("payment_lines")
+      .select("*")
+      .eq("closing_day_id", closingId)
+      .order("sort_order", { ascending: true }),
+    supabase
       .from("closing_documents")
       .select("*")
       .eq("closing_day_id", closingId)
@@ -57,6 +63,9 @@ export const getClosingById = async (closingId: string) => {
   if (categories.error) throw categories.error;
   if (lottery.error) throw lottery.error;
   if (billpay.error) throw billpay.error;
+  if (paymentLines.error && !isSupabaseMissingTableError(paymentLines.error, "payment_lines")) {
+    throw paymentLines.error;
+  }
   if (documents.error) throw documents.error;
 
   return {
@@ -64,6 +73,7 @@ export const getClosingById = async (closingId: string) => {
     categories: categories.data ?? [],
     lottery: lottery.data ?? [],
     billpay: billpay.data ?? [],
+    paymentLines: paymentLines.data ?? [],
     documents: documents.data ?? []
   };
 };

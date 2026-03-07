@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { aggregateMonthlyLotteryData } from "@/lib/analytics/monthly";
+import { aggregateMonthlyLotteryData, aggregateMonthlyPaymentData } from "@/lib/analytics/monthly";
 import { createEmptyClosing } from "@/lib/closing/defaults";
 import { saveClosingLocallyAndQueue } from "@/lib/closing/save";
 import {
@@ -219,6 +219,39 @@ describe("lottery master + monthly integration", () => {
     expect(aggregation.summary.total_amount_due).toBe(43);
   });
 
+  it("monthly payment aggregation uses dynamic payment lines when present", () => {
+    const payments = aggregateMonthlyPaymentData({
+      closings: [
+        {
+          id: "closing-with-lines",
+          cash_amount: 200,
+          card_amount: 100,
+          ebt_amount: 50,
+          other_amount: 10
+        },
+        {
+          id: "legacy-without-lines",
+          cash_amount: 10,
+          card_amount: 5,
+          ebt_amount: 0,
+          other_amount: 0
+        }
+      ],
+      paymentLines: [
+        { closing_day_id: "closing-with-lines", payment_type: "cash", amount: 70 },
+        { closing_day_id: "closing-with-lines", payment_type: "cash", amount: 30 },
+        { closing_day_id: "closing-with-lines", payment_type: "card", amount: 80 },
+        { closing_day_id: "closing-with-lines", payment_type: "other", amount: 20 }
+      ]
+    });
+
+    expect(payments.rows.find((row) => row.name === "Cash")?.amount).toBe(110);
+    expect(payments.rows.find((row) => row.name === "Card")?.amount).toBe(85);
+    expect(payments.rows.find((row) => row.name === "EBT")?.amount).toBe(0);
+    expect(payments.rows.find((row) => row.name === "Other")?.amount).toBe(20);
+    expect(payments.total).toBe(215);
+  });
+
   it("daily closing PDF supports snapshot lottery rows", async () => {
     const bytes = await generateClosingPdf({
       store: {
@@ -273,6 +306,7 @@ describe("lottery master + monthly integration", () => {
         }
       ],
       billpayLines: [],
+      paymentLines: [{ payment_type: "cash", label: "Cash", amount: 100 }],
       chartData: {
         gross: [
           { name: "Products", value: 70 },

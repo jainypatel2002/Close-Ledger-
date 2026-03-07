@@ -10,6 +10,37 @@ interface OfflineHydratorProps {
   lotteryMasterEntries?: LotteryMasterEntry[];
 }
 
+const buildFallbackPaymentLines = (closing: Record<string, unknown>) => [
+  {
+    id: crypto.randomUUID(),
+    payment_type: "cash" as const,
+    label: "Cash",
+    amount: Number(closing.cash_amount ?? 0),
+    sort_order: 0
+  },
+  {
+    id: crypto.randomUUID(),
+    payment_type: "card" as const,
+    label: "Card",
+    amount: Number(closing.card_amount ?? 0),
+    sort_order: 1
+  },
+  {
+    id: crypto.randomUUID(),
+    payment_type: "ebt" as const,
+    label: "EBT",
+    amount: Number(closing.ebt_amount ?? 0),
+    sort_order: 2
+  },
+  {
+    id: crypto.randomUUID(),
+    payment_type: "other" as const,
+    label: "Other",
+    amount: Number(closing.other_amount ?? 0),
+    sort_order: 3
+  }
+];
+
 export const OfflineHydrator = ({
   stores = [],
   closings = [],
@@ -65,6 +96,7 @@ export const OfflineHydrator = ({
           category_lines: existing?.category_lines ?? [],
           lottery_lines: existing?.lottery_lines ?? [],
           billpay_lines: existing?.billpay_lines ?? [],
+          payment_lines: existing?.payment_lines ?? buildFallbackPaymentLines(closing),
           reopen_reason: "",
           updated_at: String(closing.updated_at ?? now),
           _dirty: false

@@ -45,6 +45,13 @@ interface BillpayLineInput {
   txn_count: number;
 }
 
+type PaymentType = "cash" | "card" | "ebt" | "other";
+
+interface PaymentLineInput {
+  payment_type: PaymentType | string;
+  amount: number;
+}
+
 interface TotalsInput {
   categoryLines: CategoryLineInput[];
   lotteryScratchLines: ScratchLineInput[];
@@ -58,19 +65,34 @@ interface TotalsInput {
   tax_amount_manual?: number | null;
   includeBillpayInGross: boolean;
   includeLotteryInGross: boolean;
-  paymentBreakdown: {
+  paymentBreakdown?: {
     cash_amount: number;
     card_amount: number;
     ebt_amount: number;
     other_amount: number;
   };
+  paymentLines?: PaymentLineInput[];
 }
 
-export const computeTax = ({ taxable_sales, tax_rate }: TaxInput): number => {
-  const validTaxableSales = Math.max(0, taxable_sales);
-  const validRate = Math.max(0, tax_rate);
-  return toMoney(validTaxableSales * validRate);
-};
+export const computeTaxableSalesTotal = (categoryLines: CategoryLineInput[]) =>
+  toMoney(
+    categoryLines
+      .filter((line) => line.taxable)
+      .reduce((sum, line) => sum + Math.max(0, Number(line.amount ?? 0)), 0)
+  );
+
+export const computeNonTaxableSalesTotal = (categoryLines: CategoryLineInput[]) =>
+  toMoney(
+    categoryLines
+      .filter((line) => !line.taxable)
+      .reduce((sum, line) => sum + Math.max(0, Number(line.amount ?? 0)), 0)
+  );
+
+export const computeTaxAmount = (taxableSales: number, taxRate: number) =>
+  toMoney(Math.max(0, taxableSales) * Math.max(0, taxRate));
+
+export const computeTax = ({ taxable_sales, tax_rate }: TaxInput): number =>
+  computeTaxAmount(taxable_sales, tax_rate);
 
 export const computeScratchTicketsSold = ({
   start,
@@ -107,17 +129,27 @@ export const computePaymentOverShort = ({
   gross_collected: number;
 }) => toMoney(payments_total - gross_collected);
 
+export const computePaymentTypeSubtotal = (
+  paymentLines: PaymentLineInput[],
+  type: PaymentType
+) =>
+  toMoney(
+    paymentLines
+      .filter((line) => String(line.payment_type).toLowerCase() === type)
+      .reduce((sum, line) => sum + Math.max(0, Number(line.amount ?? 0)), 0)
+  );
+
+export const computeGrandPaymentsTotal = (paymentLines: PaymentLineInput[]) =>
+  toMoney(
+    paymentLines.reduce(
+      (sum, line) => sum + Math.max(0, Number(line.amount ?? 0)),
+      0
+    )
+  );
+
 export const computeClosingTotals = (input: TotalsInput) => {
-  const taxable_sales = toMoney(
-    input.categoryLines
-      .filter((line) => line.taxable)
-      .reduce((sum, line) => sum + Math.max(0, line.amount), 0)
-  );
-  const non_taxable_sales = toMoney(
-    input.categoryLines
-      .filter((line) => !line.taxable)
-      .reduce((sum, line) => sum + Math.max(0, line.amount), 0)
-  );
+  const taxable_sales = computeTaxableSalesTotal(input.categoryLines);
+  const non_taxable_sales = computeNonTaxableSalesTotal(input.categoryLines);
   const product_sales_total = toMoney(taxable_sales + non_taxable_sales);
 
   const scratchTotals = input.lotteryScratchLines.reduce(
@@ -179,15 +211,35 @@ export const computeClosingTotals = (input: TotalsInput) => {
     input.tax_mode === "MANUAL" ||
     (input.tax_amount_manual !== null && input.tax_amount_manual !== undefined)
       ? toMoney(Math.max(0, input.tax_amount_manual ?? 0))
-      : computeTax({ taxable_sales, tax_rate: input.tax_rate });
+      : computeTaxAmount(taxable_sales, input.tax_rate);
 
   const total_sales_gross = toMoney(gross_collected);
-  const payments_total = toMoney(
-    Math.max(0, input.paymentBreakdown.cash_amount) +
-      Math.max(0, input.paymentBreakdown.card_amount) +
-      Math.max(0, input.paymentBreakdown.ebt_amount) +
-      Math.max(0, input.paymentBreakdown.other_amount)
-  );
+  const paymentLines =
+    input.paymentLines && input.paymentLines.length > 0
+      ? input.paymentLines
+      : [
+          {
+            payment_type: "cash",
+            amount: Number(input.paymentBreakdown?.cash_amount ?? 0)
+          },
+          {
+            payment_type: "card",
+            amount: Number(input.paymentBreakdown?.card_amount ?? 0)
+          },
+          {
+            payment_type: "ebt",
+            amount: Number(input.paymentBreakdown?.ebt_amount ?? 0)
+          },
+          {
+            payment_type: "other",
+            amount: Number(input.paymentBreakdown?.other_amount ?? 0)
+          }
+        ];
+  const cash_amount = computePaymentTypeSubtotal(paymentLines, "cash");
+  const card_amount = computePaymentTypeSubtotal(paymentLines, "card");
+  const ebt_amount = computePaymentTypeSubtotal(paymentLines, "ebt");
+  const other_amount = computePaymentTypeSubtotal(paymentLines, "other");
+  const payments_total = computeGrandPaymentsTotal(paymentLines);
   const cash_over_short = computePaymentOverShort({ payments_total, gross_collected });
 
   return {
@@ -204,6 +256,10 @@ export const computeClosingTotals = (input: TotalsInput) => {
     billpay_collected_total,
     billpay_fee_revenue,
     billpay_transactions_count,
+    cash_amount,
+    card_amount,
+    ebt_amount,
+    other_amount,
     gross_collected,
     true_revenue,
     tax_amount,

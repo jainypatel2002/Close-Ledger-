@@ -5,10 +5,75 @@ import { closingFormSchema } from "@/lib/validation/closing";
 import { Role } from "@/lib/types";
 import { ClosingFormValues } from "@/lib/validation/closing";
 import { offlineDb } from "@/lib/offline/db";
-import { enqueueMutation, syncNow } from "@/lib/offline/sync";
+import { enqueueMutation } from "@/lib/offline/sync";
 
 const isLockedForStaff = (role: Role, status: ClosingFormValues["status"]) =>
   role === "STAFF" && status !== "DRAFT";
+
+const isBrowserOnline = () =>
+  typeof navigator === "undefined" ? true : navigator.onLine;
+
+const saveClosingToServer = async (values: ClosingFormValues) => {
+  const response = await fetch("/api/closings/upsert", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(values)
+  });
+  const payload = (await response.json().catch(() => ({}))) as {
+    id?: string;
+    status?: ClosingFormValues["status"];
+    error?: string;
+  };
+  if (!response.ok || !payload.id || !payload.status) {
+    throw new Error(payload.error || "Unable to save closing.");
+  }
+  return {
+    id: payload.id,
+    status: payload.status
+  };
+};
+
+const removeQueuedClosingMutations = async (closingIds: string[]) => {
+  if (closingIds.length === 0) {
+    return;
+  }
+  const queue = await offlineDb.mutations.where("type").equals("UPSERT_CLOSING").toArray();
+  const ids = queue
+    .filter((mutation) => {
+      const entityId = String(mutation.entity_id ?? "");
+      return closingIds.includes(entityId);
+    })
+    .map((mutation) => mutation.id);
+  if (ids.length > 0) {
+    await offlineDb.mutations.bulkDelete(ids);
+  }
+};
+
+const saveClosingLocallyAsSynced = async ({
+  values,
+  id,
+  status
+}: {
+  values: ClosingFormValues;
+  id: string;
+  status: ClosingFormValues["status"];
+}) => {
+  const now = new Date().toISOString();
+  const next = {
+    ...values,
+    id,
+    status,
+    updated_at: now,
+    _dirty: false
+  };
+  if (id !== values.id) {
+    await offlineDb.closings.delete(values.id);
+  }
+  await offlineDb.closings.put(next);
+  await removeQueuedClosingMutations(
+    [...new Set([values.id, id].filter((closingId) => Boolean(closingId)))]
+  );
+};
 
 export const saveClosingLocallyAndQueue = async ({
   values,
@@ -43,18 +108,38 @@ export const saveClosingLocallyAndQueue = async ({
 
 export const saveAndMaybeSync = async ({
   values,
-  role
+  role,
+  requireServer = false
 }: {
   values: ClosingFormValues;
   role: Role;
+  requireServer?: boolean;
 }) => {
-  await saveClosingLocallyAndQueue({ values, role });
-  if (typeof navigator !== "undefined" && navigator.onLine) {
-    const result = await syncNow();
-    if (result.failed > 0) {
-      throw new Error("Saved locally, but sync failed for one or more updates.");
-    }
-  } else {
-    toast.info("Saved offline. This will sync automatically when online.");
+  const parsed = closingFormSchema.parse(values);
+
+  if (requireServer && !isBrowserOnline()) {
+    throw new Error("You are offline. Submit/finalize requires an online sync.");
   }
+
+  if (!isBrowserOnline()) {
+    await saveClosingLocallyAndQueue({ values: parsed, role });
+    toast.info("Saved offline. This will sync automatically when online.");
+    return {
+      id: parsed.id,
+      status: parsed.status,
+      persisted: "offline" as const
+    };
+  }
+
+  const saved = await saveClosingToServer(parsed);
+  await saveClosingLocallyAsSynced({
+    values: parsed,
+    id: saved.id,
+    status: saved.status
+  });
+  return {
+    id: saved.id,
+    status: saved.status,
+    persisted: "server" as const
+  };
 };

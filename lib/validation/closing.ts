@@ -12,6 +12,7 @@ export const closingStatusSchema = z.enum([
 ]);
 
 export const taxModeSchema = z.enum(["AUTO", "MANUAL"]);
+export const paymentTypeSchema = z.enum(["cash", "card", "ebt", "other"]);
 
 export const categoryLineSchema = z.object({
   id: z.string().uuid(),
@@ -54,6 +55,14 @@ export const billpayLineSchema = z.object({
   txn_count: z.number().int().min(0).max(100000)
 });
 
+export const paymentLineSchema = z.object({
+  id: z.string().uuid(),
+  payment_type: paymentTypeSchema,
+  label: z.string().min(1).max(120),
+  amount: nonNegativeMoneySchema,
+  sort_order: z.number().int().min(0).max(100000)
+});
+
 export const closingFormSchema = z.object({
   id: z.string().uuid(),
   store_id: z.string().uuid(),
@@ -79,6 +88,7 @@ export const closingFormSchema = z.object({
   category_lines: z.array(categoryLineSchema),
   lottery_lines: z.array(lotteryLineSchema),
   billpay_lines: z.array(billpayLineSchema),
+  payment_lines: z.array(paymentLineSchema),
   reopen_reason: z.string().max(200).optional()
 });
 

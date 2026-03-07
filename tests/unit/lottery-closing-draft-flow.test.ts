@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { buildLotteryLineFromMasterEntry } from "@/lib/lottery/snapshots";
 import {
   appendLotteryMasterEntryToDraftLines,
-  buildNextClosingDraftForLotteryWorkflow
+  buildNextClosingDraftForLotteryWorkflow,
+  upsertLotteryMasterEntryInDraftLines
 } from "@/lib/lottery/closing-draft";
 import { createEmptyClosing } from "@/lib/closing/defaults";
 import { LotteryMasterEntry, Store } from "@/lib/types";
@@ -79,6 +80,38 @@ describe("lottery closing draft helpers", () => {
       entry: { ...lockedEntryFixture, id: "9d8d24c6-f13f-4475-8f15-a4cf9e0e1dd6", is_active: false }
     });
     expect(inactiveAttempt).toHaveLength(1);
+  });
+
+  it("updates current draft snapshots when admin edits an existing locked lottery", () => {
+    const existingLine = {
+      ...buildLotteryLineFromMasterEntry(lockedEntryFixture),
+      start_number: 180,
+      end_number: 160
+    };
+    const editedEntry = {
+      ...lockedEntryFixture,
+      display_number: 9,
+      name: "Cashword Plus",
+      ticket_price: 10,
+      default_bundle_size: 150,
+      is_locked: false
+    };
+
+    const result = upsertLotteryMasterEntryInDraftLines({
+      currentLines: [existingLine],
+      entry: editedEntry
+    });
+
+    expect(result.added).toBe(false);
+    expect(result.updated).toBe(true);
+    expect(result.lines).toHaveLength(1);
+    expect(result.lines[0].display_number_snapshot).toBe(9);
+    expect(result.lines[0].lottery_name_snapshot).toBe("Cashword Plus");
+    expect(result.lines[0].ticket_price_snapshot).toBe(10);
+    expect(result.lines[0].bundle_size_snapshot).toBe(150);
+    expect(result.lines[0].is_locked_snapshot).toBe(false);
+    expect(result.lines[0].start_number).toBe(180);
+    expect(result.lines[0].end_number).toBe(160);
   });
 
   it("builds a fresh next-entry draft that clears nightly values but keeps locked structure", () => {

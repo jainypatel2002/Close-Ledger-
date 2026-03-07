@@ -34,9 +34,15 @@ export const createEmptyClosing = (
     category_lines: [
       {
         id: crypto.randomUUID(),
-        category_name: "General Merchandise",
+        category_name: "Taxable Sales",
         amount: 0,
         taxable: true
+      },
+      {
+        id: crypto.randomUUID(),
+        category_name: "Non-Taxable Sales",
+        amount: 0,
+        taxable: false
       }
     ],
     lottery_lines: snapshotLines.length > 0 ? snapshotLines : [],
@@ -47,6 +53,36 @@ export const createEmptyClosing = (
         amount_collected: 0,
         fee_revenue: 0,
         txn_count: 0
+      }
+    ],
+    payment_lines: [
+      {
+        id: crypto.randomUUID(),
+        payment_type: "cash",
+        label: "Cash",
+        amount: 0,
+        sort_order: 0
+      },
+      {
+        id: crypto.randomUUID(),
+        payment_type: "card",
+        label: "Card",
+        amount: 0,
+        sort_order: 1
+      },
+      {
+        id: crypto.randomUUID(),
+        payment_type: "ebt",
+        label: "EBT",
+        amount: 0,
+        sort_order: 2
+      },
+      {
+        id: crypto.randomUUID(),
+        payment_type: "other",
+        label: "Other",
+        amount: 0,
+        sort_order: 3
       }
     ],
     reopen_reason: ""

@@ -41,7 +41,7 @@ export async function POST(
       return NextResponse.json({ error: "No store access." }, { status: 403 });
     }
 
-    const [{ data: store }, { data: lottery }, { data: billpay }, { data: existingDocs }] =
+    const [{ data: store }, { data: lottery }, { data: billpay }, { data: paymentLines }, { data: existingDocs }] =
       await Promise.all([
       supabase.from("stores").select("*").eq("id", closing.store_id).single(),
       supabase
@@ -50,6 +50,11 @@ export async function POST(
         .eq("closing_day_id", id)
         .order("display_number_snapshot", { ascending: true }),
       supabase.from("billpay_lines").select("*").eq("closing_day_id", id),
+      supabase
+        .from("payment_lines")
+        .select("*")
+        .eq("closing_day_id", id)
+        .order("sort_order", { ascending: true }),
       supabase.from("closing_documents").select("id").eq("closing_day_id", id).limit(1)
     ]);
 
@@ -78,6 +83,7 @@ export async function POST(
       closing,
       lotteryLines: lottery ?? [],
       billpayLines: billpay ?? [],
+      paymentLines: paymentLines ?? [],
       chartData: {
         gross:
           body.chartData?.gross?.map((slice) => ({ ...slice })) ?? [
@@ -86,12 +92,34 @@ export async function POST(
             { name: "Billpay", value: closing.billpay_collected_total ?? 0 }
           ],
         payments:
-          body.chartData?.payments?.map((slice) => ({ ...slice })) ?? [
-            { name: "Cash", value: closing.cash_amount ?? 0 },
-            { name: "Card", value: closing.card_amount ?? 0 },
-            { name: "EBT", value: closing.ebt_amount ?? 0 },
-            { name: "Other", value: closing.other_amount ?? 0 }
-          ]
+          body.chartData?.payments?.map((slice) => ({ ...slice })) ??
+          (() => {
+            const totals = new Map<string, number>([
+              ["cash", 0],
+              ["card", 0],
+              ["ebt", 0],
+              ["other", 0]
+            ]);
+            (paymentLines ?? []).forEach((line) => {
+              const type = String(line.payment_type ?? "").toLowerCase();
+              if (!totals.has(type)) {
+                return;
+              }
+              totals.set(type, Number(totals.get(type) ?? 0) + Number(line.amount ?? 0));
+            });
+            if ((paymentLines ?? []).length === 0) {
+              totals.set("cash", Number(closing.cash_amount ?? 0));
+              totals.set("card", Number(closing.card_amount ?? 0));
+              totals.set("ebt", Number(closing.ebt_amount ?? 0));
+              totals.set("other", Number(closing.other_amount ?? 0));
+            }
+            return [
+              { name: "Cash", value: Number(totals.get("cash") ?? 0) },
+              { name: "Card", value: Number(totals.get("card") ?? 0) },
+              { name: "EBT", value: Number(totals.get("ebt") ?? 0) },
+              { name: "Other", value: Number(totals.get("other") ?? 0) }
+            ];
+          })()
       }
     });
 
