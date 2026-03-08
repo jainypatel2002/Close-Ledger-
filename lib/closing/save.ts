@@ -24,13 +24,28 @@ const saveClosingToServer = async (values: ClosingFormValues) => {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(values)
   });
-  const payload = (await response.json().catch(() => ({}))) as {
-    id?: string;
-    status?: ClosingFormValues["status"];
-    error?: string;
-  };
+  const rawText = await response.text();
+  const payload = (() => {
+    try {
+      return JSON.parse(rawText) as {
+        id?: string;
+        status?: ClosingFormValues["status"];
+        error?: string;
+      };
+    } catch {
+      return {} as {
+        id?: string;
+        status?: ClosingFormValues["status"];
+        error?: string;
+      };
+    }
+  })();
+  const fallbackError =
+    rawText.trim().length > 0
+      ? rawText.trim().slice(0, 240)
+      : `Unable to save closing (HTTP ${response.status}).`;
   if (!response.ok || !payload.id || !payload.status) {
-    throw new Error(payload.error || "Unable to save closing.");
+    throw new Error(payload.error || fallbackError);
   }
   return {
     id: payload.id,

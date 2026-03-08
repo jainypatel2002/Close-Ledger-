@@ -10,6 +10,10 @@ import { computeClosingTotals } from "@/lib/math/closing";
 import { getCurrentUser, getMembershipForStore } from "@/lib/server/rbac";
 import { canModifyExistingClosing } from "@/lib/server/closing-permissions";
 import { computeSnapshotLineTotals } from "@/lib/lottery/snapshots";
+import {
+  isSupabaseMissingColumnError,
+  isSupabaseMissingTableError
+} from "@/lib/supabase/errors";
 import { ZodError } from "zod";
 
 interface NormalizedLotteryLine {
@@ -28,6 +32,54 @@ interface NormalizedLotteryLine {
   manual_override_reason: string | null;
   legacy_payouts: number;
 }
+
+const CLOSING_DAY_LEGACY_COLUMNS = [
+  "lottery_total_scratch_revenue",
+  "lottery_online_amount",
+  "lottery_paid_out_amount",
+  "lottery_amount_due",
+  "payments_total"
+] as const;
+
+const LOTTERY_LEGACY_FALLBACK_COLUMNS = [
+  "store_id",
+  "lottery_master_entry_id",
+  "lottery_number_snapshot",
+  "display_number_snapshot",
+  "lottery_name_snapshot",
+  "amount_snapshot",
+  "ticket_price_snapshot",
+  "bundle_size_snapshot",
+  "is_locked_snapshot",
+  "start_number",
+  "end_number",
+  "tickets_sold",
+  "sales_amount",
+  "payouts",
+  "net_amount",
+  "manual_override_reason",
+  "created_by_app_user_id",
+  "updated_by_app_user_id"
+] as const;
+
+const PAYMENT_LINE_OPTIONAL_COLUMNS = ["created_by_app_user_id", "updated_by_app_user_id"] as const;
+
+const omitObjectKeys = <T extends Record<string, unknown>, K extends keyof T>(
+  input: T,
+  keys: readonly K[]
+): Omit<T, K> => {
+  const next = { ...input };
+  keys.forEach((key) => {
+    delete next[key];
+  });
+  return next;
+};
+
+const matchesMissingColumns = (
+  error: unknown,
+  tableName: string,
+  columns: readonly string[]
+) => columns.some((column) => isSupabaseMissingColumnError(error, tableName, column));
 
 export async function POST(request: NextRequest) {
   let diagnostics: {
@@ -385,11 +437,19 @@ export async function POST(request: NextRequest) {
     };
     diagnostics.closingId = String(closingPayload.id);
 
-    const { data: saved, error: saveError } = await supabase
-      .from("closing_days")
-      .upsert(closingPayload)
-      .select("*")
-      .single();
+    const legacyClosingPayload = omitObjectKeys(closingPayload, CLOSING_DAY_LEGACY_COLUMNS);
+
+    let {
+      data: saved,
+      error: saveError
+    } = await supabase.from("closing_days").upsert(closingPayload).select("*").single();
+    if (saveError && matchesMissingColumns(saveError, "closing_days", CLOSING_DAY_LEGACY_COLUMNS)) {
+      ({ data: saved, error: saveError } = await supabase
+        .from("closing_days")
+        .upsert(legacyClosingPayload)
+        .select("*")
+        .single());
+    }
     if (saveError || !saved) {
       throw saveError ?? new Error("Failed to save closing.");
     }
@@ -439,6 +499,50 @@ export async function POST(request: NextRequest) {
       }
     };
 
+    const syncLinesWithFallback = async <
+      T extends
+        | "closing_category_lines"
+        | "lottery_scratch_lines"
+        | "billpay_lines"
+        | "payment_lines",
+      R extends Record<string, unknown>
+    >({
+      table,
+      rows,
+      legacyRows,
+      tolerateMissingTable = false,
+      fallbackColumns = []
+    }: {
+      table: T;
+      rows: R[];
+      legacyRows?: R[];
+      tolerateMissingTable?: boolean;
+      fallbackColumns?: readonly string[];
+    }) => {
+      try {
+        await syncLines(table, rows);
+      } catch (error) {
+        if (tolerateMissingTable && isSupabaseMissingTableError(error, table)) {
+          console.warn("closing_upsert_table_missing", {
+            ...diagnostics,
+            table
+          });
+          return;
+        }
+
+        if (
+          legacyRows &&
+          fallbackColumns.length > 0 &&
+          matchesMissingColumns(error, table, fallbackColumns)
+        ) {
+          await syncLines(table, legacyRows);
+          return;
+        }
+
+        throw error;
+      }
+    };
+
     await syncLines(
       "closing_category_lines",
       parsed.category_lines.map((line) => ({
@@ -450,63 +554,83 @@ export async function POST(request: NextRequest) {
       }))
     );
 
-    await syncLines(
-      "lottery_scratch_lines",
-      normalizedLotteryLines.map((line) => {
-        const computed = computeSnapshotLineTotals({
-          id: line.id,
-          lottery_master_entry_id: line.lottery_master_entry_id,
-          display_number_snapshot: line.display_number_snapshot,
-          lottery_name_snapshot: line.lottery_name_snapshot,
-          ticket_price_snapshot: line.ticket_price_snapshot,
-          bundle_size_snapshot: line.bundle_size_snapshot,
-          is_locked_snapshot: line.is_locked_snapshot,
-          pack_id: line.pack_id,
-          start_number: line.start_number,
-          end_number: line.end_number,
-          inclusive_count: line.inclusive_count,
-          tickets_sold_override: line.tickets_sold_override,
-          manual_override_reason: line.manual_override_reason ?? "",
-          payouts: line.legacy_payouts,
-          override_reason: line.manual_override_reason
-        });
+    const lotteryRows = normalizedLotteryLines.map((line) => {
+      const computed = computeSnapshotLineTotals({
+        id: line.id,
+        lottery_master_entry_id: line.lottery_master_entry_id,
+        display_number_snapshot: line.display_number_snapshot,
+        lottery_name_snapshot: line.lottery_name_snapshot,
+        ticket_price_snapshot: line.ticket_price_snapshot,
+        bundle_size_snapshot: line.bundle_size_snapshot,
+        is_locked_snapshot: line.is_locked_snapshot,
+        pack_id: line.pack_id,
+        start_number: line.start_number,
+        end_number: line.end_number,
+        inclusive_count: line.inclusive_count,
+        tickets_sold_override: line.tickets_sold_override,
+        manual_override_reason: line.manual_override_reason ?? "",
+        payouts: line.legacy_payouts,
+        override_reason: line.manual_override_reason
+      });
 
-        return {
-          id: line.id,
-          closing_day_id: closingId,
-          store_id: parsed.store_id,
-          lottery_master_entry_id: line.lottery_master_entry_id,
-          lottery_number_snapshot: line.display_number_snapshot,
-          display_number_snapshot: line.display_number_snapshot,
-          lottery_name_snapshot: line.lottery_name_snapshot,
-          amount_snapshot: line.ticket_price_snapshot,
-          ticket_price_snapshot: line.ticket_price_snapshot,
-          bundle_size_snapshot: line.bundle_size_snapshot,
-          is_locked_snapshot: line.is_locked_snapshot,
-          start_number: line.start_number,
-          end_number: line.end_number,
-          tickets_sold: computed.ticketsSold,
-          sales_amount: computed.salesAmount,
-          payouts: line.legacy_payouts,
-          net_amount: computed.netAmount,
-          manual_override_reason: line.manual_override_reason,
-          game_name: line.lottery_name_snapshot,
-          pack_id: line.pack_id || null,
-          start_ticket_number: line.start_number,
-          end_ticket_number: line.end_number,
-          inclusive_count: line.inclusive_count,
-          bundle_size: line.bundle_size_snapshot,
-          ticket_price: line.ticket_price_snapshot,
-          tickets_sold_override: line.tickets_sold_override,
-          override_reason: line.manual_override_reason,
-          tickets_sold_computed: computed.ticketsSold,
-          scratch_sales: computed.salesAmount,
-          scratch_payouts: line.legacy_payouts,
-          created_by_app_user_id: user.id,
-          updated_by_app_user_id: user.id
-        };
-      })
-    );
+      return {
+        id: line.id,
+        closing_day_id: closingId,
+        store_id: parsed.store_id,
+        lottery_master_entry_id: line.lottery_master_entry_id,
+        lottery_number_snapshot: line.display_number_snapshot,
+        display_number_snapshot: line.display_number_snapshot,
+        lottery_name_snapshot: line.lottery_name_snapshot,
+        amount_snapshot: line.ticket_price_snapshot,
+        ticket_price_snapshot: line.ticket_price_snapshot,
+        bundle_size_snapshot: line.bundle_size_snapshot,
+        is_locked_snapshot: line.is_locked_snapshot,
+        start_number: line.start_number,
+        end_number: line.end_number,
+        tickets_sold: computed.ticketsSold,
+        sales_amount: computed.salesAmount,
+        payouts: line.legacy_payouts,
+        net_amount: computed.netAmount,
+        manual_override_reason: line.manual_override_reason,
+        game_name: line.lottery_name_snapshot,
+        pack_id: line.pack_id || null,
+        start_ticket_number: line.start_number,
+        end_ticket_number: line.end_number,
+        inclusive_count: line.inclusive_count,
+        bundle_size: line.bundle_size_snapshot,
+        ticket_price: line.ticket_price_snapshot,
+        tickets_sold_override: line.tickets_sold_override,
+        override_reason: line.manual_override_reason,
+        tickets_sold_computed: computed.ticketsSold,
+        scratch_sales: computed.salesAmount,
+        scratch_payouts: line.legacy_payouts,
+        created_by_app_user_id: user.id,
+        updated_by_app_user_id: user.id
+      };
+    });
+    const legacyLotteryRows = lotteryRows.map((line) => ({
+      id: line.id,
+      closing_day_id: line.closing_day_id,
+      game_name: line.game_name,
+      pack_id: line.pack_id,
+      start_ticket_number: line.start_ticket_number,
+      end_ticket_number: line.end_ticket_number,
+      inclusive_count: line.inclusive_count,
+      bundle_size: line.bundle_size,
+      ticket_price: line.ticket_price,
+      tickets_sold_override: line.tickets_sold_override,
+      override_reason: line.override_reason,
+      tickets_sold_computed: line.tickets_sold_computed,
+      scratch_sales: line.scratch_sales,
+      scratch_payouts: line.scratch_payouts
+    }));
+
+    await syncLinesWithFallback({
+      table: "lottery_scratch_lines",
+      rows: lotteryRows,
+      legacyRows: legacyLotteryRows,
+      fallbackColumns: LOTTERY_LEGACY_FALLBACK_COLUMNS
+    });
 
     await syncLines(
       "billpay_lines",
@@ -520,20 +644,34 @@ export async function POST(request: NextRequest) {
       }))
     );
 
-    await syncLines(
-      "payment_lines",
-      parsed.payment_lines.map((line, index) => ({
-        id: line.id,
-        closing_day_id: closingId,
-        store_id: parsed.store_id,
-        payment_type: line.payment_type,
-        label: line.label,
-        amount: line.amount,
-        sort_order: Number.isFinite(line.sort_order) ? line.sort_order : index,
-        created_by_app_user_id: user.id,
-        updated_by_app_user_id: user.id
-      }))
-    );
+    const paymentRows = parsed.payment_lines.map((line, index) => ({
+      id: line.id,
+      closing_day_id: closingId,
+      store_id: parsed.store_id,
+      payment_type: line.payment_type,
+      label: line.label,
+      amount: line.amount,
+      sort_order: Number.isFinite(line.sort_order) ? line.sort_order : index,
+      created_by_app_user_id: user.id,
+      updated_by_app_user_id: user.id
+    }));
+    const legacyPaymentRows = paymentRows.map((line) => ({
+      id: line.id,
+      closing_day_id: line.closing_day_id,
+      store_id: line.store_id,
+      payment_type: line.payment_type,
+      label: line.label,
+      amount: line.amount,
+      sort_order: line.sort_order
+    }));
+
+    await syncLinesWithFallback({
+      table: "payment_lines",
+      rows: paymentRows,
+      legacyRows: legacyPaymentRows,
+      tolerateMissingTable: true,
+      fallbackColumns: PAYMENT_LINE_OPTIONAL_COLUMNS
+    });
 
     let finalSaved = saved;
     if (membership.role === "STAFF" && shouldLock) {
@@ -570,7 +708,12 @@ export async function POST(request: NextRequest) {
     });
 
     if (auditError) {
-      throw auditError;
+      console.warn("closing_upsert_audit_failed", {
+        ...diagnostics,
+        message: typeof auditError === "object" && auditError !== null && "message" in auditError
+          ? String((auditError as { message?: unknown }).message ?? "Audit insert failed.")
+          : "Audit insert failed."
+      });
     }
 
     return NextResponse.json({ id: closingId, status: finalSaved.status });

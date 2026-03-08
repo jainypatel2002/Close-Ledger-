@@ -6,7 +6,13 @@ interface SupabasePostgrestErrorLike {
 }
 
 const TABLE_MISSING_CODE = "PGRST205";
+const COLUMN_MISSING_CODES = new Set(["PGRST204", "42703"]);
 const UNIQUE_VIOLATION_CODE = "23505";
+
+const getSupabaseErrorText = (error: SupabasePostgrestErrorLike) =>
+  [error.message, error.hint, error.details]
+    .map((value) => String(value ?? ""))
+    .join("\n");
 
 export const isSupabaseMissingTableError = (
   error: unknown,
@@ -25,15 +31,48 @@ export const isSupabaseMissingTableError = (
     return true;
   }
 
-  const message = String(postgrestError.message ?? "");
-  const hint = String(postgrestError.hint ?? "");
+  const combined = getSupabaseErrorText(postgrestError);
   const fullyQualified = tableName.includes(".") ? tableName : `public.${tableName}`;
 
   return (
-    message.includes(tableName) ||
-    message.includes(fullyQualified) ||
-    hint.includes(tableName) ||
-    hint.includes(fullyQualified)
+    combined.includes(tableName) ||
+    combined.includes(fullyQualified)
+  );
+};
+
+export const isSupabaseMissingColumnError = (
+  error: unknown,
+  tableName?: string,
+  columnName?: string
+): boolean => {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  const postgrestError = error as SupabasePostgrestErrorLike;
+  if (!COLUMN_MISSING_CODES.has(String(postgrestError.code ?? ""))) {
+    return false;
+  }
+
+  const combined = getSupabaseErrorText(postgrestError);
+  const fullyQualified = tableName
+    ? tableName.includes(".")
+      ? tableName
+      : `public.${tableName}`
+    : null;
+
+  if (tableName && !combined.includes(tableName) && !(fullyQualified && combined.includes(fullyQualified))) {
+    return false;
+  }
+
+  if (!columnName) {
+    return combined.toLowerCase().includes("column");
+  }
+
+  return (
+    combined.includes(columnName) ||
+    combined.includes(`'${columnName}'`) ||
+    combined.includes(`"${columnName}"`)
   );
 };
 
