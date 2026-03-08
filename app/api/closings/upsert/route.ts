@@ -1,10 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
-import { closingFormSchema } from "@/lib/validation/closing";
+import {
+  closingFormSchema,
+  formatClosingValidationDiagnostics,
+  formatClosingValidationError,
+  normalizeClosingFormValues
+} from "@/lib/validation/closing";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { computeClosingTotals } from "@/lib/math/closing";
 import { getCurrentUser, getMembershipForStore } from "@/lib/server/rbac";
 import { canModifyExistingClosing } from "@/lib/server/closing-permissions";
 import { computeSnapshotLineTotals } from "@/lib/lottery/snapshots";
+import { ZodError } from "zod";
 
 interface NormalizedLotteryLine {
   id: string;
@@ -38,7 +44,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = await request.json();
-    const parsed = closingFormSchema.parse(body);
+    const parsed = closingFormSchema.parse(normalizeClosingFormValues(body));
     const supabase = await createSupabaseServerClient();
     const user = await getCurrentUser();
     if (!user) {
@@ -569,7 +575,12 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ id: closingId, status: finalSaved.status });
   } catch (error) {
-    const rawMessage = error instanceof Error ? error.message : "Unable to save closing.";
+    const rawMessage =
+      error instanceof ZodError
+        ? formatClosingValidationError(error)
+        : error instanceof Error
+          ? error.message
+          : "Unable to save closing.";
     const errorCode =
       typeof error === "object" && error !== null && "code" in error
         ? String((error as { code?: unknown }).code ?? "")
@@ -585,7 +596,9 @@ export async function POST(request: NextRequest) {
     console.error("closing_upsert_failed", {
       ...diagnostics,
       errorCode,
-      message: rawMessage
+      message: rawMessage,
+      validation:
+        error instanceof ZodError ? formatClosingValidationDiagnostics(error) : undefined
     });
 
     return NextResponse.json({ error: message }, { status: duplicateDayConflict ? 409 : 400 });

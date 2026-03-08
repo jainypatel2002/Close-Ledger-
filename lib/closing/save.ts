@@ -1,11 +1,16 @@
 "use client";
 
 import { toast } from "sonner";
-import { closingFormSchema } from "@/lib/validation/closing";
+import {
+  closingFormSchema,
+  formatClosingValidationError,
+  normalizeClosingFormValues
+} from "@/lib/validation/closing";
 import { Role } from "@/lib/types";
 import { ClosingFormValues } from "@/lib/validation/closing";
 import { offlineDb } from "@/lib/offline/db";
 import { enqueueMutation } from "@/lib/offline/sync";
+import { ZodError } from "zod";
 
 const isLockedForStaff = (role: Role, status: ClosingFormValues["status"]) =>
   role === "STAFF" && status !== "DRAFT";
@@ -82,7 +87,15 @@ export const saveClosingLocallyAndQueue = async ({
   values: ClosingFormValues;
   role: Role;
 }) => {
-  const parsed = closingFormSchema.parse(values);
+  let parsed: ClosingFormValues;
+  try {
+    parsed = closingFormSchema.parse(normalizeClosingFormValues(values));
+  } catch (error) {
+    if (error instanceof ZodError) {
+      throw new Error(formatClosingValidationError(error));
+    }
+    throw error;
+  }
   const existing = await offlineDb.closings.get(parsed.id);
   if (existing && isLockedForStaff(role, existing.status)) {
     throw new Error("This record is locked or you do not have permission to edit it.");
@@ -115,7 +128,15 @@ export const saveAndMaybeSync = async ({
   role: Role;
   requireServer?: boolean;
 }) => {
-  const parsed = closingFormSchema.parse(values);
+  let parsed: ClosingFormValues;
+  try {
+    parsed = closingFormSchema.parse(normalizeClosingFormValues(values));
+  } catch (error) {
+    if (error instanceof ZodError) {
+      throw new Error(formatClosingValidationError(error));
+    }
+    throw error;
+  }
 
   if (requireServer && !isBrowserOnline()) {
     throw new Error("You are offline. Submit/finalize requires an online sync.");

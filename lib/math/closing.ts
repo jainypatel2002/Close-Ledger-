@@ -240,7 +240,8 @@ export const computeClosingTotals = (input: TotalsInput) => {
   const ebt_amount = computePaymentTypeSubtotal(paymentLines, "ebt");
   const other_amount = computePaymentTypeSubtotal(paymentLines, "other");
   const payments_total = computeGrandPaymentsTotal(paymentLines);
-  const cash_over_short = computePaymentOverShort({ payments_total, gross_collected });
+  // Legacy compatibility field only. Over/short is no longer surfaced in the product.
+  const cash_over_short = 0;
 
   return {
     product_sales_total,

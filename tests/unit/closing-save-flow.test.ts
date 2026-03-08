@@ -113,4 +113,59 @@ describe("closing save flow", () => {
     expect(resolved).toBeTruthy();
     expect(resolved?.status).toBe("DRAFT");
   });
+
+  it.each(["SUBMITTED", "FINALIZED", "LOCKED"] as const)(
+    "persists %s status to the server when the action succeeds",
+    async (status) => {
+      const draft = createEmptyClosing(storeFixture);
+      const fetchMock = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ id: draft.id, status }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        })
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      const result = await saveAndMaybeSync({
+        values: { ...draft, status },
+        role: "ADMIN",
+        requireServer: true
+      });
+
+      expect(result.status).toBe(status);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const init = fetchMock.mock.calls[0]?.[1] as RequestInit | undefined;
+      const payload = JSON.parse(String(init?.body ?? "{}"));
+      expect(payload.status).toBe(status);
+    }
+  );
+
+  it("normalizes missing child row ids before saving", async () => {
+    const draft = createEmptyClosing(storeFixture);
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ id: draft.id, status: "DRAFT" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    draft.billpay_lines = draft.billpay_lines.map(
+      ({ id: _id, ...line }) => line as (typeof draft.billpay_lines)[number]
+    );
+    draft.payment_lines = draft.payment_lines.map(
+      ({ id: _id, ...line }) => line as (typeof draft.payment_lines)[number]
+    );
+    draft.category_lines = draft.category_lines.map(
+      ({ id: _id, ...line }) => line as (typeof draft.category_lines)[number]
+    );
+
+    await saveAndMaybeSync({ values: draft, role: "ADMIN" });
+
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit | undefined;
+    const payload = JSON.parse(String(init?.body ?? "{}"));
+    expect(payload.billpay_lines[0].id).toBeTruthy();
+    expect(payload.payment_lines[0].id).toBeTruthy();
+    expect(payload.category_lines[0].id).toBeTruthy();
+  });
 });

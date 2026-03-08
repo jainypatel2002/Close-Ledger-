@@ -33,7 +33,7 @@ describe("closing math", () => {
     expect(computeScratchTicketsSold({ start: 39, end: 38, inclusive: true }).ticketsSold).toBe(1);
   });
 
-  it("computes over short", () => {
+  it("keeps the legacy over short utility available for historical data", () => {
     expect(computePaymentOverShort({ payments_total: 120, gross_collected: 100 })).toBe(
       20
     );
@@ -91,7 +91,7 @@ describe("closing math", () => {
     expect(totals.ebt_amount).toBe(20);
     expect(totals.other_amount).toBe(15);
     expect(totals.payments_total).toBe(115);
-    expect(totals.cash_over_short).toBe(7);
+    expect(totals.cash_over_short).toBe(0);
   });
 
   it("computes payment type and grand totals from dynamic lines", () => {

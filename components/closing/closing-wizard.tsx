@@ -5,7 +5,13 @@ import { motion } from "framer-motion";
 import { useDeferredValue, useEffect, useMemo, useState, useTransition } from "react";
 import { useFieldArray, useForm, useWatch } from "react-hook-form";
 import { toast } from "sonner";
-import { closingFormSchema, ClosingFormValues } from "@/lib/validation/closing";
+import {
+  closingFormSchema,
+  ClosingFormValues,
+  formatClosingValidationDiagnostics,
+  formatClosingValidationError,
+  normalizeClosingFormValues
+} from "@/lib/validation/closing";
 import { computeClosingTotals } from "@/lib/math/closing";
 import { createEmptyClosing } from "@/lib/closing/defaults";
 import { saveAndMaybeSync } from "@/lib/closing/save";
@@ -48,6 +54,8 @@ const steps = [
   "Review"
 ] as const;
 
+type ActionIntent = "draft" | "submit" | "finalize" | "lock" | "pdf";
+
 const bytesToBase64 = (bytes: Uint8Array) => {
   let binary = "";
   bytes.forEach((byte) => {
@@ -76,6 +84,7 @@ export const ClosingWizard = ({
 }: ClosingWizardProps) => {
   const [stepIndex, setStepIndex] = useState(0);
   const [pending, startTransition] = useTransition();
+  const [activeAction, setActiveAction] = useState<ActionIntent | null>(null);
   const [lastSavedStatus, setLastSavedStatus] = useState<ClosingFormValues["status"]>(
     initialValue?.status ?? "DRAFT"
   );
@@ -92,9 +101,21 @@ export const ClosingWizard = ({
     mode: "onBlur"
   });
 
-  const lotteryArray = useFieldArray({ control: form.control, name: "lottery_lines" });
-  const billpayArray = useFieldArray({ control: form.control, name: "billpay_lines" });
-  const paymentArray = useFieldArray({ control: form.control, name: "payment_lines" });
+  const lotteryArray = useFieldArray({
+    control: form.control,
+    name: "lottery_lines",
+    keyName: "fieldKey"
+  });
+  const billpayArray = useFieldArray({
+    control: form.control,
+    name: "billpay_lines",
+    keyName: "fieldKey"
+  });
+  const paymentArray = useFieldArray({
+    control: form.control,
+    name: "payment_lines",
+    keyName: "fieldKey"
+  });
 
   const watched = useWatch({ control: form.control });
   const deferredWatched = useDeferredValue(watched);
@@ -228,7 +249,7 @@ export const ClosingWizard = ({
         return;
       }
       try {
-        const parsed = closingFormSchema.parse(values);
+        const parsed = closingFormSchema.parse(normalizeClosingFormValues(values));
         if (timer) {
           clearTimeout(timer);
         }
@@ -556,89 +577,145 @@ export const ClosingWizard = ({
     return byType;
   }, [watched.payment_lines]);
 
-  const getFirstValidationMessage = (value: unknown): string | null => {
-    if (!value || typeof value !== "object") {
-      return null;
-    }
-    if ("message" in (value as Record<string, unknown>)) {
-      const message = (value as { message?: unknown }).message;
-      if (typeof message === "string" && message.trim()) {
-        return message;
+  const applyPersistedResult = (
+    values: ClosingFormValues,
+    result: Awaited<ReturnType<typeof saveAndMaybeSync>>
+  ) => {
+    form.reset(
+      {
+        ...values,
+        id: result.id,
+        status: result.status
+      },
+      {
+        keepErrors: true,
+        keepTouched: true
       }
+    );
+    setLastSavedStatus(result.status);
+  };
+
+  const buildClosingPayload = (status: ClosingFormValues["status"]) => {
+    const values = form.getValues();
+    return normalizeClosingFormValues({
+      ...values,
+      status,
+      tax_amount_manual: values.tax_override_enabled ? values.tax_amount_manual : null,
+      lottery_total_scratch_revenue: totals.lottery_total_scratch_revenue,
+      lottery_amount_due: totals.lottery_amount_due,
+      cash_amount: totals.cash_amount,
+      card_amount: totals.card_amount,
+      ebt_amount: totals.ebt_amount,
+      other_amount: totals.other_amount
+    }) as ClosingFormValues;
+  };
+
+  const validateClosingPayload = (status: ClosingFormValues["status"]) => {
+    const candidate = buildClosingPayload(status);
+    const result = closingFormSchema.safeParse(candidate);
+    if (result.success) {
+      return result.data;
     }
-    for (const child of Object.values(value as Record<string, unknown>)) {
-      const nested = getFirstValidationMessage(child);
-      if (nested) {
-        return nested;
-      }
-    }
+    console.error("closing_validation_failed", formatClosingValidationDiagnostics(result.error));
+    toast.error(formatClosingValidationError(result.error));
     return null;
   };
 
-  const persist = (status: ClosingFormValues["status"]) =>
-    form.handleSubmit(
-      (values) => {
-        if (role === "STAFF" && readOnly) {
-          toast.error("This closing has been locked. Contact admin for changes.");
-          return;
-        }
+  const persist = async ({
+    status,
+    action,
+    successToast = true
+  }: {
+    status: ClosingFormValues["status"];
+    action: ActionIntent;
+    successToast?: boolean;
+  }) => {
+    if (role === "STAFF" && readOnly) {
+      toast.error("This closing has been locked. Contact admin for changes.");
+      return null;
+    }
 
-        startTransition(async () => {
-          try {
-            const payload: ClosingFormValues = {
-              ...values,
-              status,
-              tax_amount_manual: values.tax_override_enabled ? values.tax_amount_manual : null,
-              lottery_total_scratch_revenue: totals.lottery_total_scratch_revenue,
-              lottery_amount_due: totals.lottery_amount_due
-            };
-            const result = await saveAndMaybeSync({
-              values: payload,
-              role,
-              requireServer: status !== "DRAFT"
-            });
-            if (result.id !== values.id) {
-              form.setValue("id", result.id, {
-                shouldDirty: false,
-                shouldTouch: false,
-                shouldValidate: false
-              });
-            }
-            setLastSavedStatus(result.status);
-            form.setValue("status", result.status, {
-              shouldDirty: false,
-              shouldTouch: false,
-              shouldValidate: false
-            });
-            toast.success(
-              result.status === "DRAFT"
-                ? result.persisted === "offline"
-                  ? "Draft saved locally. It will sync when online."
-                  : "Draft saved."
-                : result.status === "SUBMITTED"
-                  ? "Closing submitted. This closing has been locked. Contact admin for changes."
-                  : result.status === "FINALIZED"
-                    ? "Closing finalized. This closing has been locked. Contact admin for changes."
-                    : "Closing locked."
-            );
-          } catch (error) {
-            toast.error(error instanceof Error ? error.message : "Save failed.");
-          }
-        });
-      },
-      (errors) => {
-        const message = getFirstValidationMessage(errors);
-        toast.error(message || "Please fix validation errors before saving.");
+    const payload = validateClosingPayload(status);
+    if (!payload) {
+      return null;
+    }
+
+    setActiveAction(action);
+    try {
+      const result = await saveAndMaybeSync({
+        values: payload,
+        role,
+        requireServer: status !== "DRAFT"
+      });
+      applyPersistedResult(payload, result);
+      if (successToast) {
+        toast.success(
+          result.status === "DRAFT"
+            ? result.persisted === "offline"
+              ? "Draft saved locally. It will sync when online."
+              : "Draft saved."
+            : result.status === "SUBMITTED"
+              ? "Closing submitted. This closing has been locked. Contact admin for changes."
+              : result.status === "FINALIZED"
+                ? "Closing finalized. This closing has been locked. Contact admin for changes."
+                : "Closing locked."
+        );
       }
-    )();
+      return {
+        ...result,
+        values: payload
+      };
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Save failed.");
+      return null;
+    } finally {
+      setActiveAction(null);
+    }
+  };
+
+  const shouldFallbackToOfflinePdf = (error: unknown) => {
+    if (!(error instanceof Error)) {
+      return true;
+    }
+    return (
+      error.message === "offline-pdf-fallback" ||
+      error.message === "Server PDF generation unavailable." ||
+      error.message.includes("Failed to fetch") ||
+      error.message.includes("NetworkError")
+    );
+  };
 
   const generatePdf = async () => {
     if (!allowPrintPdf && role === "STAFF") {
       toast.error("PDF printing is disabled for staff.");
       return;
     }
-    const values = form.getValues();
+    setActiveAction("pdf");
     try {
+      const draftStatus = watched.status ?? "DRAFT";
+      const validatedValues = validateClosingPayload(draftStatus);
+      if (!validatedValues) {
+        return;
+      }
+
+      let values = validatedValues;
+      if (!readOnly && form.formState.isDirty) {
+        const saved = await saveAndMaybeSync({
+          values: validatedValues,
+          role,
+          requireServer: false
+        });
+        applyPersistedResult(validatedValues, saved);
+        values = {
+          ...validatedValues,
+          id: saved.id,
+          status: saved.status
+        };
+        if (saved.persisted === "offline") {
+          throw new Error("offline-pdf-fallback");
+        }
+      }
+
       const response = await fetch(`/api/closings/${values.id}/pdf`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -650,10 +727,10 @@ export const ClosingWizard = ({
               { name: "Billpay", value: totals.billpay_collected_total }
             ],
             payments: [
-              { name: "Cash", value: values.cash_amount },
-              { name: "Card", value: values.card_amount },
-              { name: "EBT", value: values.ebt_amount },
-              { name: "Other", value: values.other_amount }
+              { name: "Cash", value: totals.cash_amount },
+              { name: "Card", value: totals.card_amount },
+              { name: "EBT", value: totals.ebt_amount },
+              { name: "Other", value: totals.other_amount }
             ]
           }
         })
@@ -666,15 +743,19 @@ export const ClosingWizard = ({
         window.open(payload.url, "_blank", "noopener,noreferrer");
       }
       return;
-    } catch {
+    } catch (error) {
+      if (!shouldFallbackToOfflinePdf(error)) {
+        toast.error(error instanceof Error ? error.message : "Unable to generate PDF.");
+        return;
+      }
+      const values = validateClosingPayload(watched.status ?? "DRAFT");
+      if (!values) {
+        return;
+      }
       const bytes = await generateOfflineClosingPdf({
         store,
         closing: values,
-        totals: {
-          gross_collected: totals.gross_collected,
-          true_revenue: totals.true_revenue,
-          tax_amount: totals.tax_amount
-        }
+        generatedAtIso: new Date().toISOString()
       });
       const fileName = `offline_closing_${values.business_date}_${Date.now()}.pdf`;
       const bytesBase64 = bytesToBase64(bytes);
@@ -700,8 +781,12 @@ export const ClosingWizard = ({
         }
       });
       toast.info("Offline PDF generated. Upload queued for next sync.");
+    } finally {
+      setActiveAction(null);
     }
   };
+
+  const isActionBusy = pending || activeAction !== null;
 
   return (
     <div className="space-y-4">
@@ -991,7 +1076,7 @@ export const ClosingWizard = ({
                               (entry) => entry.id === line.lottery_master_entry_id
                             ) ?? null;
                       const lineSnapshot = {
-                        id: field.id,
+                        id: String(line?.id ?? field.id),
                         display_number_snapshot: Number(line?.display_number_snapshot ?? index + 1),
                         lottery_name_snapshot: String(line?.lottery_name_snapshot ?? "Lottery"),
                         ticket_price_snapshot: Number(line?.ticket_price_snapshot ?? 0),
@@ -1015,9 +1100,13 @@ export const ClosingWizard = ({
                       });
 
                       return (
-                        <tr key={field.id} className="border-t border-white/10 align-top">
+                        <tr key={field.fieldKey} className="border-t border-white/10 align-top">
                           <td className="px-3 py-2 font-semibold">
                             {lineSnapshot.display_number_snapshot}
+                            <input
+                              type="hidden"
+                              {...form.register(`lottery_lines.${index}.id`)}
+                            />
                             <input
                               type="hidden"
                               {...form.register(`lottery_lines.${index}.lottery_master_entry_id`)}
@@ -1215,7 +1304,8 @@ export const ClosingWizard = ({
           <section className="space-y-3">
             <h3 className="text-lg font-semibold">Billpay</h3>
             {billpayArray.fields.map((field, index) => (
-              <div key={field.id} className="grid gap-2 sm:grid-cols-4">
+              <div key={field.fieldKey} className="grid gap-2 sm:grid-cols-4">
+                <input type="hidden" {...form.register(`billpay_lines.${index}.id`)} />
                 <input
                   className="field"
                   placeholder="Provider"
@@ -1453,9 +1543,13 @@ export const ClosingWizard = ({
                     <div className="space-y-2">
                       {paymentLineIndexesByType[type].map((index) => (
                         <div
-                          key={paymentArray.fields[index]?.id ?? index}
+                          key={paymentArray.fields[index]?.fieldKey ?? index}
                           className="grid gap-2 sm:grid-cols-[1fr_180px_auto]"
                         >
+                          <input
+                            type="hidden"
+                            {...form.register(`payment_lines.${index}.id`)}
+                          />
                           <input
                             type="hidden"
                             {...form.register(`payment_lines.${index}.payment_type`)}
@@ -1561,9 +1655,6 @@ export const ClosingWizard = ({
               <p className="rounded-lg border border-white/10 p-3 text-sm">
                 Lottery amount due: <strong>{formatCurrency(totals.lottery_amount_due)}</strong>
               </p>
-              <p className="rounded-lg border border-white/10 p-3 text-sm">
-                Over/short: <strong>{formatCurrency(totals.cash_over_short)}</strong>
-              </p>
             </div>
             {lockForStaff && (
               <p className="rounded-lg border border-amber-400/40 bg-amber-500/15 p-3 text-sm text-amber-100">
@@ -1597,14 +1688,14 @@ export const ClosingWizard = ({
             <button
               type="button"
               className="rounded border border-white/20 px-3 py-1.5 text-xs hover:bg-white/10 disabled:opacity-50"
-              disabled={pending || readOnly}
-              onClick={() => persist("DRAFT")}
+              disabled={isActionBusy || readOnly}
+              onClick={() => void persist({ status: "DRAFT", action: "draft" })}
             >
-              Save Draft
+              {activeAction === "draft" ? "Saving..." : "Save Draft"}
             </button>
             <DepthButton
               type="button"
-              disabled={pending || readOnly}
+              disabled={isActionBusy || readOnly}
               onClick={async () => {
                 const ok = window.confirm(
                   "After submission, staff cannot edit this entry. Continue?"
@@ -1612,15 +1703,15 @@ export const ClosingWizard = ({
                 if (!ok) {
                   return;
                 }
-                await persist("SUBMITTED");
+                await persist({ status: "SUBMITTED", action: "submit" });
               }}
             >
-              Submit Closing
+              {activeAction === "submit" ? "Submitting..." : "Submit Closing"}
             </DepthButton>
             <button
               type="button"
               className="rounded border border-white/20 px-3 py-1.5 text-xs hover:bg-white/10 disabled:opacity-50"
-              disabled={pending || readOnly}
+              disabled={isActionBusy || readOnly}
               onClick={async () => {
                 const ok = window.confirm(
                   "Finalize this closing? Staff will not be able to edit afterward."
@@ -1628,34 +1719,34 @@ export const ClosingWizard = ({
                 if (!ok) {
                   return;
                 }
-                await persist("FINALIZED");
+                await persist({ status: "FINALIZED", action: "finalize" });
               }}
             >
-              Finalize Closing
+              {activeAction === "finalize" ? "Finalizing..." : "Finalize Closing"}
             </button>
             {role === "ADMIN" && (
               <button
                 type="button"
                 className="rounded border border-white/20 px-3 py-1.5 text-xs hover:bg-white/10 disabled:opacity-50"
-                disabled={pending}
+                disabled={isActionBusy}
                 onClick={async () => {
                   const ok = window.confirm("Lock this closing now?");
                   if (!ok) {
                     return;
                   }
-                  await persist("LOCKED");
+                  await persist({ status: "LOCKED", action: "lock" });
                 }}
               >
-                Lock Entry
+                {activeAction === "lock" ? "Locking..." : "Lock Entry"}
               </button>
             )}
             <button
               type="button"
               className="rounded border border-white/20 px-3 py-1.5 text-xs hover:bg-white/10 disabled:opacity-50"
-              disabled={pending || (role === "STAFF" && !allowPrintPdf)}
+              disabled={isActionBusy || (role === "STAFF" && !allowPrintPdf)}
               onClick={generatePdf}
             >
-              Generate PDF
+              {activeAction === "pdf" ? "Generating..." : "Generate PDF"}
             </button>
           </div>
         </div>
