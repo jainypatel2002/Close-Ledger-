@@ -32,7 +32,8 @@ describe("closing mapper compatibility", () => {
       categories: [],
       lottery: [],
       billpay: [],
-      paymentLines: []
+      paymentLines: [],
+      vendorPayouts: []
     });
 
     expect(values.payment_lines).toHaveLength(4);
@@ -70,7 +71,8 @@ describe("closing mapper compatibility", () => {
       categories: [],
       lottery: [],
       billpay: [],
-      paymentLines: []
+      paymentLines: [],
+      vendorPayouts: []
     });
 
     expect(values.category_lines).toHaveLength(2);

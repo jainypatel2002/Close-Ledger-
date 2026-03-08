@@ -97,6 +97,7 @@ export const OfflineHydrator = ({
           lottery_lines: existing?.lottery_lines ?? [],
           billpay_lines: existing?.billpay_lines ?? [],
           payment_lines: existing?.payment_lines ?? buildFallbackPaymentLines(closing),
+          vendor_payout_lines: existing?.vendor_payout_lines ?? [],
           reopen_reason: "",
           updated_at: String(closing.updated_at ?? now),
           _dirty: false

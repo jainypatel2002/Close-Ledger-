@@ -214,7 +214,8 @@ describe("closing pdf generation", () => {
       categories: [],
       lottery: [],
       billpay: [],
-      paymentLines: []
+      paymentLines: [],
+      vendorPayouts: []
     });
 
     const bytes = await generateOfflineClosingPdf({

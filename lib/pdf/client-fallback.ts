@@ -92,6 +92,7 @@ export const generateOfflineClosingPdf = async ({
     lotteryLines: closing.lottery_lines,
     billpayLines: closing.billpay_lines,
     paymentLines: closing.payment_lines,
+    vendorPayouts: closing.vendor_payout_lines,
     generatedAtIso,
     sourceLabel: "OFFLINE PDF"
   });

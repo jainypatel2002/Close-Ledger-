@@ -85,6 +85,7 @@ export const createEmptyClosing = (
         sort_order: 3
       }
     ],
+    vendor_payout_lines: [],
     reopen_reason: ""
   };
 };

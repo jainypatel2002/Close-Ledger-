@@ -666,6 +666,11 @@ export const ClosingWizard = ({
         values: payload
       };
     } catch (error) {
+      console.error("closing_persist_failed", {
+        action,
+        status,
+        message: error instanceof Error ? error.message : "Unknown save error."
+      });
       toast.error(error instanceof Error ? error.message : "Save failed.");
       return null;
     } finally {

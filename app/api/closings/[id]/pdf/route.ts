@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { getCurrentUser, getMembershipForStore } from "@/lib/server/rbac";
 import { generateClosingPdf } from "@/lib/pdf/closing-pdf";
+import { isSupabaseMissingTableError } from "@/lib/supabase/errors";
 
 const toPathDate = (businessDate: string) => {
   const [year, month, day] = businessDate.split("-");
@@ -41,8 +42,14 @@ export async function POST(
       return NextResponse.json({ error: "No store access." }, { status: 403 });
     }
 
-    const [{ data: store }, { data: lottery }, { data: billpay }, { data: paymentLines }, { data: existingDocs }] =
-      await Promise.all([
+    const [
+      { data: store },
+      { data: lottery },
+      { data: billpay },
+      paymentLinesResult,
+      vendorPayoutsResult,
+      { data: existingDocs }
+    ] = await Promise.all([
       supabase.from("stores").select("*").eq("id", closing.store_id).single(),
       supabase
         .from("lottery_scratch_lines")
@@ -55,12 +62,32 @@ export async function POST(
         .select("*")
         .eq("closing_day_id", id)
         .order("sort_order", { ascending: true }),
+      supabase
+        .from("vendor_payout_lines")
+        .select("*")
+        .eq("closing_day_id", id)
+        .order("created_at", { ascending: true }),
       supabase.from("closing_documents").select("id").eq("closing_day_id", id).limit(1)
     ]);
 
     if (!store) {
       return NextResponse.json({ error: "Store not found." }, { status: 404 });
     }
+    if (
+      paymentLinesResult.error &&
+      !isSupabaseMissingTableError(paymentLinesResult.error, "payment_lines")
+    ) {
+      throw paymentLinesResult.error;
+    }
+    if (
+      vendorPayoutsResult.error &&
+      !isSupabaseMissingTableError(vendorPayoutsResult.error, "vendor_payout_lines")
+    ) {
+      throw vendorPayoutsResult.error;
+    }
+    const paymentLines = paymentLinesResult.data ?? [];
+    const vendorPayouts = vendorPayoutsResult.data ?? [];
+
     if (membership.role === "STAFF") {
       const canPrint =
         Boolean(membership.permissions.can_print_pdf) || Boolean(store.allow_staff_print_pdf);
@@ -83,7 +110,8 @@ export async function POST(
       closing,
       lotteryLines: lottery ?? [],
       billpayLines: billpay ?? [],
-      paymentLines: paymentLines ?? [],
+      paymentLines,
+      vendorPayouts,
       chartData: {
         gross:
           body.chartData?.gross?.map((slice) => ({ ...slice })) ?? [
@@ -100,14 +128,14 @@ export async function POST(
               ["ebt", 0],
               ["other", 0]
             ]);
-            (paymentLines ?? []).forEach((line) => {
+            paymentLines.forEach((line) => {
               const type = String(line.payment_type ?? "").toLowerCase();
               if (!totals.has(type)) {
                 return;
               }
               totals.set(type, Number(totals.get(type) ?? 0) + Number(line.amount ?? 0));
             });
-            if ((paymentLines ?? []).length === 0) {
+            if (paymentLines.length === 0) {
               totals.set("cash", Number(closing.cash_amount ?? 0));
               totals.set("card", Number(closing.card_amount ?? 0));
               totals.set("ebt", Number(closing.ebt_amount ?? 0));

@@ -3,6 +3,7 @@
 import { toast } from "sonner";
 import {
   closingFormSchema,
+  formatClosingValidationDiagnostics,
   formatClosingValidationError,
   normalizeClosingFormValues
 } from "@/lib/validation/closing";
@@ -31,12 +32,14 @@ const saveClosingToServer = async (values: ClosingFormValues) => {
         id?: string;
         status?: ClosingFormValues["status"];
         error?: string;
+        details?: string;
       };
     } catch {
       return {} as {
         id?: string;
         status?: ClosingFormValues["status"];
         error?: string;
+        details?: string;
       };
     }
   })();
@@ -45,7 +48,13 @@ const saveClosingToServer = async (values: ClosingFormValues) => {
       ? rawText.trim().slice(0, 240)
       : `Unable to save closing (HTTP ${response.status}).`;
   if (!response.ok || !payload.id || !payload.status) {
-    throw new Error(payload.error || fallbackError);
+    const message = payload.error || fallbackError;
+    if (payload.details) {
+      console.error("closing_server_validation_details", payload.details);
+    }
+    throw new Error(
+      payload.details && response.status === 400 ? `${message} (${payload.details})` : message
+    );
   }
   return {
     id: payload.id,
@@ -107,6 +116,7 @@ export const saveClosingLocallyAndQueue = async ({
     parsed = closingFormSchema.parse(normalizeClosingFormValues(values));
   } catch (error) {
     if (error instanceof ZodError) {
+      console.error("closing_local_validation_failed", formatClosingValidationDiagnostics(error));
       throw new Error(formatClosingValidationError(error));
     }
     throw error;
@@ -148,6 +158,7 @@ export const saveAndMaybeSync = async ({
     parsed = closingFormSchema.parse(normalizeClosingFormValues(values));
   } catch (error) {
     if (error instanceof ZodError) {
+      console.error("closing_save_validation_failed", formatClosingValidationDiagnostics(error));
       throw new Error(formatClosingValidationError(error));
     }
     throw error;

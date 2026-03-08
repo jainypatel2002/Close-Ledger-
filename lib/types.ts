@@ -129,6 +129,18 @@ export interface BillpayLine {
   updated_at: string;
 }
 
+export interface VendorPayoutLine {
+  id: string;
+  closing_day_id: string;
+  vendor_name: string;
+  amount: number;
+  notes: string | null;
+  created_by_app_user_id: string | null;
+  updated_by_app_user_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface PaymentLine {
   id: string;
   closing_day_id: string;
@@ -288,6 +300,12 @@ export interface ClosingInput {
     label: string;
     amount: number;
     sort_order: number;
+  }>;
+  vendor_payout_lines: Array<{
+    id: string;
+    vendor_name: string;
+    amount: number;
+    notes?: string;
   }>;
   reopen_reason?: string;
 }

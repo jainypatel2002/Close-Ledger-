@@ -62,7 +62,9 @@ const storeFixture: Store = {
 
 interface MockState {
   closingDayUpserts: Array<Record<string, unknown>>;
+  closingDayUpdates: Array<Record<string, unknown>>;
   tableUpserts: Record<string, Array<unknown>>;
+  operations: string[];
   paymentTableMissing?: boolean;
   auditError?: unknown;
 }
@@ -78,6 +80,7 @@ const createTableMock = (table: string, state: MockState) => {
 
   const execute = async () => {
     if (context.mode === "upsert") {
+      state.operations.push(`upsert:${table}`);
       state.tableUpserts[table] = state.tableUpserts[table] ?? [];
       state.tableUpserts[table].push(context.payload);
 
@@ -119,6 +122,7 @@ const createTableMock = (table: string, state: MockState) => {
     }
 
     if (context.mode === "delete") {
+      state.operations.push(`delete:${table}`);
       if (table === "payment_lines" && state.paymentTableMissing) {
         return {
           error: {
@@ -132,13 +136,21 @@ const createTableMock = (table: string, state: MockState) => {
 
     if (context.mode === "update" && table === "closing_days") {
       const payload = context.payload as Record<string, unknown>;
+      state.operations.push(`update:${table}`);
+      state.closingDayUpdates.push(payload);
       return {
         data: {
-          id: String(payload.id ?? crypto.randomUUID()),
+          id: String(state.closingDayUpserts.at(-1)?.id ?? crypto.randomUUID()),
           status: String(payload.status ?? "DRAFT"),
           version: 2,
-          submitted_at: null,
-          finalized_at: null
+          submitted_at:
+            payload.submitted_at === undefined || payload.submitted_at === null
+              ? null
+              : String(payload.submitted_at),
+          finalized_at:
+            payload.finalized_at === undefined || payload.finalized_at === null
+              ? null
+              : String(payload.finalized_at)
         },
         error: null
       };
@@ -202,7 +214,9 @@ describe("closing upsert route", () => {
   it("retries closing_days save without new columns when the database is on the legacy schema", async () => {
     const state: MockState = {
       closingDayUpserts: [],
-      tableUpserts: {}
+      closingDayUpdates: [],
+      tableUpserts: {},
+      operations: []
     };
     mocks.fromMock.mockImplementation((table: string) => createTableMock(table, state));
 
@@ -227,7 +241,9 @@ describe("closing upsert route", () => {
   it("does not fail the closing action when payment_lines table is missing", async () => {
     const state: MockState = {
       closingDayUpserts: [],
+      closingDayUpdates: [],
       tableUpserts: {},
+      operations: [],
       paymentTableMissing: true
     };
     mocks.fromMock.mockImplementation((table: string) => createTableMock(table, state));
@@ -250,7 +266,9 @@ describe("closing upsert route", () => {
   it("treats manual audit insert as best effort instead of blocking the save", async () => {
     const state: MockState = {
       closingDayUpserts: [],
+      closingDayUpdates: [],
       tableUpserts: {},
+      operations: [],
       auditError: {
         message: "new row violates row-level security policy for table \"audit_log\""
       }
@@ -270,5 +288,37 @@ describe("closing upsert route", () => {
     expect(response.status).toBe(200);
     expect(payload.id).toBe(closing.id);
     expect(payload.status).toBe("DRAFT");
+  });
+
+  it("persists line data before transitioning submit/finalize/lock statuses", async () => {
+    const state: MockState = {
+      closingDayUpserts: [],
+      closingDayUpdates: [],
+      tableUpserts: {},
+      operations: []
+    };
+    mocks.fromMock.mockImplementation((table: string) => createTableMock(table, state));
+
+    const closing = { ...createEmptyClosing(storeFixture), status: "SUBMITTED" as const };
+    const response = await POST(
+      new NextRequest("http://localhost/api/closings/upsert", {
+        method: "POST",
+        body: JSON.stringify(closing),
+        headers: { "Content-Type": "application/json" }
+      })
+    );
+    const payload = (await response.json()) as { id?: string; status?: string; error?: string };
+
+    expect(response.status).toBe(200);
+    expect(payload.id).toBe(closing.id);
+    expect(payload.status).toBe("SUBMITTED");
+    expect(state.closingDayUpserts[0]?.status).toBe("DRAFT");
+    expect(state.closingDayUpdates).toHaveLength(1);
+    expect(state.closingDayUpdates[0]?.status).toBe("SUBMITTED");
+
+    const paymentPersistIndex = state.operations.indexOf("upsert:payment_lines");
+    const transitionIndex = state.operations.indexOf("update:closing_days");
+    expect(paymentPersistIndex).toBeGreaterThan(-1);
+    expect(transitionIndex).toBeGreaterThan(paymentPersistIndex);
   });
 });

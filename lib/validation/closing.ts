@@ -63,32 +63,40 @@ export const paymentLineSchema = z.object({
   sort_order: z.number().int().min(0).max(100000)
 });
 
+export const vendorPayoutLineSchema = z.object({
+  id: z.string().uuid(),
+  vendor_name: z.string().min(1).max(120),
+  amount: nonNegativeMoneySchema,
+  notes: z.string().max(250).optional().or(z.literal(""))
+});
+
 export const closingFormSchema = z.object({
   id: z.string().uuid(),
   store_id: z.string().uuid(),
   business_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD format."),
   status: closingStatusSchema,
-  tax_mode: taxModeSchema,
-  tax_rate_used: z.number().min(0).max(1),
+  tax_mode: taxModeSchema.default("AUTO"),
+  tax_rate_used: z.number().min(0).max(1).default(0),
   tax_override_enabled: z.boolean().default(false),
   tax_amount_manual: nonNegativeMoneySchema.nullable().optional(),
-  lottery_total_scratch_revenue: nonNegativeMoneySchema,
-  lottery_online_amount: nonNegativeMoneySchema,
-  lottery_paid_out_amount: nonNegativeMoneySchema,
-  lottery_amount_due: z.number({ invalid_type_error: "Must be a number." }),
-  draw_sales: nonNegativeMoneySchema,
-  draw_payouts: nonNegativeMoneySchema,
-  cash_amount: nonNegativeMoneySchema,
-  card_amount: nonNegativeMoneySchema,
-  ebt_amount: nonNegativeMoneySchema,
-  other_amount: nonNegativeMoneySchema,
+  lottery_total_scratch_revenue: nonNegativeMoneySchema.default(0),
+  lottery_online_amount: nonNegativeMoneySchema.default(0),
+  lottery_paid_out_amount: nonNegativeMoneySchema.default(0),
+  lottery_amount_due: z.number({ invalid_type_error: "Must be a number." }).default(0),
+  draw_sales: nonNegativeMoneySchema.default(0),
+  draw_payouts: nonNegativeMoneySchema.default(0),
+  cash_amount: nonNegativeMoneySchema.default(0),
+  card_amount: nonNegativeMoneySchema.default(0),
+  ebt_amount: nonNegativeMoneySchema.default(0),
+  other_amount: nonNegativeMoneySchema.default(0),
   notes: z.string().max(2000).optional(),
   include_billpay_in_gross: z.boolean().default(true),
   include_lottery_in_gross: z.boolean().default(true),
-  category_lines: z.array(categoryLineSchema),
-  lottery_lines: z.array(lotteryLineSchema),
-  billpay_lines: z.array(billpayLineSchema),
-  payment_lines: z.array(paymentLineSchema),
+  category_lines: z.array(categoryLineSchema).default([]),
+  lottery_lines: z.array(lotteryLineSchema).default([]),
+  billpay_lines: z.array(billpayLineSchema).default([]),
+  payment_lines: z.array(paymentLineSchema).default([]),
+  vendor_payout_lines: z.array(vendorPayoutLineSchema).default([]),
   reopen_reason: z.string().max(200).optional()
 });
 
@@ -126,12 +134,15 @@ export type StoreProfileValues = z.infer<typeof storeProfileSchema>;
 
 type ClosingFormInput = Omit<
   Partial<ClosingFormValues>,
-  "category_lines" | "lottery_lines" | "billpay_lines" | "payment_lines"
+  "category_lines" | "lottery_lines" | "billpay_lines" | "payment_lines" | "vendor_payout_lines"
 > & {
   category_lines?: Array<Partial<ClosingFormValues["category_lines"][number]>>;
   lottery_lines?: Array<Partial<ClosingFormValues["lottery_lines"][number]>>;
   billpay_lines?: Array<Partial<ClosingFormValues["billpay_lines"][number]>>;
   payment_lines?: Array<Partial<ClosingFormValues["payment_lines"][number]>>;
+  vendor_payout_lines?: Array<Partial<ClosingFormValues["vendor_payout_lines"][number]>>;
+  taxable_sales?: number;
+  non_taxable_sales?: number;
 };
 
 const paymentTypeLabel = (paymentType: unknown) => {
@@ -196,6 +207,19 @@ const describeIssuePath = (path: (string | number)[]) => {
     }
     return label;
   }
+  if (root === "vendor_payout_lines") {
+    const label = typeof index === "number" ? `vendor payout line ${index + 1}` : "vendor payout line";
+    if (field === "id") {
+      return `${label} metadata`;
+    }
+    if (field === "vendor_name") {
+      return `${label} vendor`;
+    }
+    if (field === "amount") {
+      return `${label} amount`;
+    }
+    return label;
+  }
 
   const labels: Record<string, string> = {
     id: "closing ID",
@@ -214,6 +238,11 @@ const describeIssuePath = (path: (string | number)[]) => {
     card_amount: "card amount",
     ebt_amount: "EBT amount",
     other_amount: "other amount",
+    category_lines: "sales lines",
+    lottery_lines: "lottery lines",
+    billpay_lines: "billpay lines",
+    payment_lines: "payment lines",
+    vendor_payout_lines: "vendor payout lines",
     notes: "notes"
   };
 
@@ -246,65 +275,147 @@ export const formatClosingValidationDiagnostics = (error: ZodError) =>
 
 export const normalizeClosingFormValues = (
   values: ClosingFormInput
-): ClosingFormInput => ({
-  ...values,
-  category_lines: Array.isArray(values.category_lines)
-    ? values.category_lines.map((line) => ({
-        ...line,
-        id: isNonEmptyString(line.id) ? line.id : crypto.randomUUID(),
-        category_name: isNonEmptyString(line.category_name)
-          ? line.category_name
-          : line.taxable
-            ? "Taxable Sales"
-            : "Non-Taxable Sales",
-        amount: Number(line.amount ?? 0),
-        taxable: Boolean(line.taxable)
-      }))
-    : values.category_lines,
-  lottery_lines: Array.isArray(values.lottery_lines)
-    ? values.lottery_lines.map((line, index) => ({
-        ...line,
-        id: isNonEmptyString(line.id) ? line.id : crypto.randomUUID(),
-        display_number_snapshot:
-          line.display_number_snapshot ?? line.lottery_number_snapshot ?? index + 1,
-        lottery_name_snapshot:
-          line.lottery_name_snapshot ?? line.game_name ?? `Lottery ${index + 1}`,
-        ticket_price_snapshot: Number(line.ticket_price_snapshot ?? line.amount_snapshot ?? line.ticket_price ?? 0),
-        bundle_size_snapshot: Number(line.bundle_size_snapshot ?? line.bundle_size ?? 100),
-        is_locked_snapshot: Boolean(line.is_locked_snapshot),
-        pack_id: line.pack_id ?? "",
-        inclusive_count: Boolean(line.inclusive_count),
-        manual_override_reason: String(line.manual_override_reason ?? line.override_reason ?? ""),
-        payouts: Number(line.payouts ?? line.scratch_payouts ?? 0),
-        scratch_payouts: Number(line.scratch_payouts ?? line.payouts ?? 0)
-      }))
-    : values.lottery_lines,
-  billpay_lines: Array.isArray(values.billpay_lines)
-    ? values.billpay_lines.map((line) => ({
-        ...line,
-        id: isNonEmptyString(line.id) ? line.id : crypto.randomUUID(),
-        provider_name: String(line.provider_name ?? ""),
-        amount_collected: Number(line.amount_collected ?? 0),
-        fee_revenue: Number(line.fee_revenue ?? 0),
-        txn_count: Number(line.txn_count ?? 0)
-      }))
-    : values.billpay_lines,
-  payment_lines: Array.isArray(values.payment_lines)
-    ? values.payment_lines.map((line, index) => ({
-        ...line,
-        id: isNonEmptyString(line.id) ? line.id : crypto.randomUUID(),
-        payment_type:
-          line.payment_type === "cash" ||
-          line.payment_type === "card" ||
-          line.payment_type === "ebt" ||
-          line.payment_type === "other"
-            ? line.payment_type
-            : "other",
-        label: isNonEmptyString(line.label)
-          ? line.label
-          : paymentTypeLabel(line.payment_type),
-        amount: Number(line.amount ?? 0),
-        sort_order: Number.isFinite(line.sort_order) ? line.sort_order : index
-      }))
-    : values.payment_lines
-});
+): ClosingFormInput => {
+  const fallbackCategoryLines = [
+    {
+      id: crypto.randomUUID(),
+      category_name: "Taxable Sales",
+      amount: Number(values.taxable_sales ?? 0),
+      taxable: true
+    },
+    {
+      id: crypto.randomUUID(),
+      category_name: "Non-Taxable Sales",
+      amount: Number(values.non_taxable_sales ?? 0),
+      taxable: false
+    }
+  ];
+
+  const fallbackPaymentLines = [
+    {
+      id: crypto.randomUUID(),
+      payment_type: "cash" as const,
+      label: "Cash",
+      amount: Number(values.cash_amount ?? 0),
+      sort_order: 0
+    },
+    {
+      id: crypto.randomUUID(),
+      payment_type: "card" as const,
+      label: "Card",
+      amount: Number(values.card_amount ?? 0),
+      sort_order: 1
+    },
+    {
+      id: crypto.randomUUID(),
+      payment_type: "ebt" as const,
+      label: "EBT",
+      amount: Number(values.ebt_amount ?? 0),
+      sort_order: 2
+    },
+    {
+      id: crypto.randomUUID(),
+      payment_type: "other" as const,
+      label: "Other",
+      amount: Number(values.other_amount ?? 0),
+      sort_order: 3
+    }
+  ];
+
+  return {
+    ...values,
+    tax_mode: values.tax_mode ?? "AUTO",
+    tax_rate_used: Number(values.tax_rate_used ?? 0),
+    tax_override_enabled: Boolean(values.tax_override_enabled),
+    tax_amount_manual:
+      values.tax_override_enabled === false
+        ? null
+        : values.tax_amount_manual === null || values.tax_amount_manual === undefined
+          ? null
+          : Number(values.tax_amount_manual),
+    lottery_total_scratch_revenue: Number(values.lottery_total_scratch_revenue ?? 0),
+    lottery_online_amount: Number(values.lottery_online_amount ?? 0),
+    lottery_paid_out_amount: Number(values.lottery_paid_out_amount ?? 0),
+    lottery_amount_due: Number(values.lottery_amount_due ?? 0),
+    draw_sales: Number(values.draw_sales ?? 0),
+    draw_payouts: Number(values.draw_payouts ?? 0),
+    cash_amount: Number(values.cash_amount ?? 0),
+    card_amount: Number(values.card_amount ?? 0),
+    ebt_amount: Number(values.ebt_amount ?? 0),
+    other_amount: Number(values.other_amount ?? 0),
+    include_billpay_in_gross: values.include_billpay_in_gross ?? true,
+    include_lottery_in_gross: values.include_lottery_in_gross ?? true,
+    category_lines:
+      Array.isArray(values.category_lines) && values.category_lines.length > 0
+        ? values.category_lines.map((line) => ({
+            ...line,
+            id: isNonEmptyString(line.id) ? line.id : crypto.randomUUID(),
+            category_name: isNonEmptyString(line.category_name)
+              ? line.category_name
+              : line.taxable
+                ? "Taxable Sales"
+                : "Non-Taxable Sales",
+            amount: Number(line.amount ?? 0),
+            taxable: Boolean(line.taxable)
+          }))
+        : fallbackCategoryLines,
+    lottery_lines: Array.isArray(values.lottery_lines)
+      ? values.lottery_lines.map((line, index) => ({
+          ...line,
+          id: isNonEmptyString(line.id) ? line.id : crypto.randomUUID(),
+          display_number_snapshot:
+            line.display_number_snapshot ?? line.lottery_number_snapshot ?? index + 1,
+          lottery_name_snapshot:
+            line.lottery_name_snapshot ?? line.game_name ?? `Lottery ${index + 1}`,
+          ticket_price_snapshot: Number(
+            line.ticket_price_snapshot ?? line.amount_snapshot ?? line.ticket_price ?? 0
+          ),
+          bundle_size_snapshot: Number(line.bundle_size_snapshot ?? line.bundle_size ?? 100),
+          is_locked_snapshot: Boolean(line.is_locked_snapshot),
+          pack_id: line.pack_id ?? "",
+          inclusive_count: Boolean(line.inclusive_count),
+          manual_override_reason: String(line.manual_override_reason ?? line.override_reason ?? ""),
+          payouts: Number(line.payouts ?? line.scratch_payouts ?? 0),
+          scratch_payouts: Number(line.scratch_payouts ?? line.payouts ?? 0)
+        }))
+      : [],
+    billpay_lines: Array.isArray(values.billpay_lines)
+      ? values.billpay_lines.map((line) => ({
+          ...line,
+          id: isNonEmptyString(line.id) ? line.id : crypto.randomUUID(),
+          provider_name: String(line.provider_name ?? ""),
+          amount_collected: Number(line.amount_collected ?? 0),
+          fee_revenue: Number(line.fee_revenue ?? 0),
+          txn_count: Number(line.txn_count ?? 0)
+        }))
+      : [],
+    payment_lines:
+      Array.isArray(values.payment_lines) && values.payment_lines.length > 0
+        ? values.payment_lines.map((line, index) => ({
+            ...line,
+            id: isNonEmptyString(line.id) ? line.id : crypto.randomUUID(),
+            payment_type:
+              line.payment_type === "cash" ||
+              line.payment_type === "card" ||
+              line.payment_type === "ebt" ||
+              line.payment_type === "other"
+                ? line.payment_type
+                : "other",
+            label: isNonEmptyString(line.label)
+              ? line.label
+              : paymentTypeLabel(line.payment_type),
+            amount: Number(line.amount ?? 0),
+            sort_order: Number.isFinite(line.sort_order) ? line.sort_order : index
+          }))
+        : fallbackPaymentLines,
+    vendor_payout_lines: Array.isArray(values.vendor_payout_lines)
+      ? values.vendor_payout_lines.map((line) => ({
+          ...line,
+          id: isNonEmptyString(line.id) ? line.id : crypto.randomUUID(),
+          vendor_name: String(line.vendor_name ?? ""),
+          amount: Number(line.amount ?? 0),
+          notes: String(line.notes ?? "")
+        }))
+      : []
+  };
+};

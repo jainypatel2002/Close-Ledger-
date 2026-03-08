@@ -6,13 +6,15 @@ export const toClosingFormValues = ({
   categories,
   lottery,
   billpay,
-  paymentLines
+  paymentLines,
+  vendorPayouts
 }: {
   closing: Record<string, unknown>;
   categories: Record<string, unknown>[];
   lottery: Record<string, unknown>[];
   billpay: Record<string, unknown>[];
   paymentLines: Record<string, unknown>[];
+  vendorPayouts: Record<string, unknown>[];
 }): ClosingFormValues => {
   const lotteryLines = lottery.map((line) => {
     const rawStart = Number(line.start_number ?? line.start_ticket_number ?? 0);
@@ -198,6 +200,12 @@ export const toClosingFormValues = ({
       txn_count: Number(line.txn_count ?? 0)
     })),
     payment_lines: normalizedPaymentLines as ClosingFormValues["payment_lines"],
+    vendor_payout_lines: vendorPayouts.map((line) => ({
+      id: String(line.id),
+      vendor_name: String(line.vendor_name ?? line.vendor ?? ""),
+      amount: Number(line.amount ?? 0),
+      notes: String(line.notes ?? "")
+    })),
     reopen_reason: ""
   };
 };

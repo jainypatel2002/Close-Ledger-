@@ -32,7 +32,8 @@ export const getClosingById = async (closingId: string) => {
     throw error;
   }
 
-  const [categories, lottery, billpay, paymentLines, documents] = await Promise.all([
+  const [categories, lottery, billpay, paymentLines, vendorPayouts, documents] =
+    await Promise.all([
     supabase
       .from("closing_category_lines")
       .select("*")
@@ -54,6 +55,11 @@ export const getClosingById = async (closingId: string) => {
       .eq("closing_day_id", closingId)
       .order("sort_order", { ascending: true }),
     supabase
+      .from("vendor_payout_lines")
+      .select("*")
+      .eq("closing_day_id", closingId)
+      .order("created_at", { ascending: true }),
+    supabase
       .from("closing_documents")
       .select("*")
       .eq("closing_day_id", closingId)
@@ -66,6 +72,12 @@ export const getClosingById = async (closingId: string) => {
   if (paymentLines.error && !isSupabaseMissingTableError(paymentLines.error, "payment_lines")) {
     throw paymentLines.error;
   }
+  if (
+    vendorPayouts.error &&
+    !isSupabaseMissingTableError(vendorPayouts.error, "vendor_payout_lines")
+  ) {
+    throw vendorPayouts.error;
+  }
   if (documents.error) throw documents.error;
 
   return {
@@ -74,6 +86,7 @@ export const getClosingById = async (closingId: string) => {
     lottery: lottery.data ?? [],
     billpay: billpay.data ?? [],
     paymentLines: paymentLines.data ?? [],
+    vendorPayouts: vendorPayouts.data ?? [],
     documents: documents.data ?? []
   };
 };

@@ -63,6 +63,10 @@ const LOTTERY_LEGACY_FALLBACK_COLUMNS = [
 ] as const;
 
 const PAYMENT_LINE_OPTIONAL_COLUMNS = ["created_by_app_user_id", "updated_by_app_user_id"] as const;
+const VENDOR_PAYOUT_OPTIONAL_COLUMNS = [
+  "created_by_app_user_id",
+  "updated_by_app_user_id"
+] as const;
 
 const omitObjectKeys = <T extends Record<string, unknown>, K extends keyof T>(
   input: T,
@@ -384,12 +388,14 @@ export async function POST(request: NextRequest) {
     });
 
     const now = new Date().toISOString();
-    const shouldLock =
-      parsed.status === "SUBMITTED" ||
-      parsed.status === "FINALIZED" ||
-      parsed.status === "LOCKED";
-    const statusForLineUpsert =
-      membership.role === "STAFF" && shouldLock ? "DRAFT" : parsed.status;
+    const requestedStatus = parsed.status;
+    const shouldTransitionAfterPersist =
+      requestedStatus === "SUBMITTED" ||
+      requestedStatus === "FINALIZED" ||
+      requestedStatus === "LOCKED";
+    const statusForLineUpsert = shouldTransitionAfterPersist
+      ? existing?.status ?? "DRAFT"
+      : requestedStatus;
 
     const closingPayload = {
       id: existing?.id ?? parsed.id,
@@ -429,10 +435,10 @@ export async function POST(request: NextRequest) {
       include_lottery_in_gross: parsed.include_lottery_in_gross,
       gross_collected: totals.gross_collected,
       true_revenue: totals.true_revenue,
-      submitted_at: statusForLineUpsert === "SUBMITTED" ? now : existing?.submitted_at ?? null,
-      finalized_at: statusForLineUpsert === "FINALIZED" ? now : existing?.finalized_at ?? null,
-      locked_at: statusForLineUpsert === "LOCKED" ? now : existing?.locked_at ?? null,
-      locked_by: statusForLineUpsert === "LOCKED" ? user.id : existing?.locked_by ?? null,
+      submitted_at: existing?.submitted_at ?? null,
+      finalized_at: existing?.finalized_at ?? null,
+      locked_at: existing?.locked_at ?? null,
+      locked_by: existing?.locked_by ?? null,
       version: (existing?.version ?? 0) + 1
     };
     diagnostics.closingId = String(closingPayload.id);
@@ -461,7 +467,8 @@ export async function POST(request: NextRequest) {
         | "closing_category_lines"
         | "lottery_scratch_lines"
         | "billpay_lines"
-        | "payment_lines",
+        | "payment_lines"
+        | "vendor_payout_lines",
       R extends Record<string, unknown>
     >(
       table: T,
@@ -504,7 +511,8 @@ export async function POST(request: NextRequest) {
         | "closing_category_lines"
         | "lottery_scratch_lines"
         | "billpay_lines"
-        | "payment_lines",
+        | "payment_lines"
+        | "vendor_payout_lines",
       R extends Record<string, unknown>
     >({
       table,
@@ -673,14 +681,39 @@ export async function POST(request: NextRequest) {
       fallbackColumns: PAYMENT_LINE_OPTIONAL_COLUMNS
     });
 
+    const vendorPayoutRows = parsed.vendor_payout_lines.map((line) => ({
+      id: line.id,
+      closing_day_id: closingId,
+      vendor_name: line.vendor_name,
+      amount: line.amount,
+      notes: line.notes?.trim() ? line.notes.trim() : null,
+      created_by_app_user_id: user.id,
+      updated_by_app_user_id: user.id
+    }));
+    const legacyVendorPayoutRows = vendorPayoutRows.map((line) => ({
+      id: line.id,
+      closing_day_id: line.closing_day_id,
+      vendor_name: line.vendor_name,
+      amount: line.amount,
+      notes: line.notes
+    }));
+
+    await syncLinesWithFallback({
+      table: "vendor_payout_lines",
+      rows: vendorPayoutRows,
+      legacyRows: legacyVendorPayoutRows,
+      tolerateMissingTable: true,
+      fallbackColumns: VENDOR_PAYOUT_OPTIONAL_COLUMNS
+    });
+
     let finalSaved = saved;
-    if (membership.role === "STAFF" && shouldLock) {
+    if (shouldTransitionAfterPersist) {
       const { data: transitioned, error: transitionError } = await supabase
         .from("closing_days")
         .update({
-          status: parsed.status,
-          submitted_at: parsed.status === "SUBMITTED" ? now : saved.submitted_at,
-          finalized_at: parsed.status === "FINALIZED" ? now : saved.finalized_at,
+          status: requestedStatus,
+          submitted_at: requestedStatus === "SUBMITTED" ? now : saved.submitted_at,
+          finalized_at: requestedStatus === "FINALIZED" ? now : saved.finalized_at,
           locked_at: now,
           locked_by: user.id,
           updated_by: user.id,
@@ -718,6 +751,8 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ id: closingId, status: finalSaved.status });
   } catch (error) {
+    const validationDetails =
+      error instanceof ZodError ? formatClosingValidationDiagnostics(error) : undefined;
     const rawMessage =
       error instanceof ZodError
         ? formatClosingValidationError(error)
@@ -740,10 +775,15 @@ export async function POST(request: NextRequest) {
       ...diagnostics,
       errorCode,
       message: rawMessage,
-      validation:
-        error instanceof ZodError ? formatClosingValidationDiagnostics(error) : undefined
+      validation: validationDetails
     });
 
-    return NextResponse.json({ error: message }, { status: duplicateDayConflict ? 409 : 400 });
+    return NextResponse.json(
+      {
+        error: message,
+        details: validationDetails
+      },
+      { status: duplicateDayConflict ? 409 : 400 }
+    );
   }
 }
